@@ -2,7 +2,7 @@
 > The original pipeline can only analyze data from 10X genomics. The code was modified to extend the analysis of data containing multiple barcodes.
 > The main code modifications are in `bin/workflow_glue/extract_barcode.py`.
 > TODO:
-> Add barcode correction to extract_barcode.py. Although downstream analysis also has steps to correct barcode, it is based on the logic of a piece of barcode.
+> Add barcode correction to extract_barcode.py. Although downstream analysis also has steps to correct barcode, it is based on the logic of a single segment of barcode.
 
 # Single cell workflow
 
