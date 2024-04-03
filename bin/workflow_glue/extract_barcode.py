@@ -591,8 +591,8 @@ def parse_probe_alignment_multi(
     """
     ref_alignment = p_alignment.traceback.ref
     query_alignment = p_alignment.traceback.query
-    print("ref  : ", ref_alignment)
-    print("query: ",query_alignment)
+    #print("ref  : ", ref_alignment)
+    #print("query: ",query_alignment)
 
     # Find the position of the Ns in the alignment. These correspond
     # to the cell barcode + UMI sequences bound by the read1 and polyT

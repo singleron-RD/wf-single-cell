@@ -3,7 +3,6 @@
 Identification of cell- and UMI barcodes from single-cell sequencing.
 
 
-
 ## Introduction
 
 This workflow extracts cell barcodes and UMIs from [10x](https://www.10xgenomics.com/)-generated single cell libraries.
