@@ -9,8 +9,9 @@ import pandas as pd
 import parasail
 from pysam import FastxFile
 
-from .sc_util import kit_adapters, rev_cmp  # noqa: ABS101
+from .sc_util import kit_adapters, rev_cmp  # noqa: ABS101a
 from .util import get_named_logger, wf_parser  # noqa: ABS101
+from .barcode import Barcode
 
 
 class KitName(str, Enum):
@@ -50,7 +51,6 @@ def argparser():
         kit: data/737K-august-2016.txt.gz. \
         For single cell multiome (ATAC + GEX) \
         kit: data/737K-arc-v1.txt.gz",
-        type=Path,
         default=None,
     )
 
@@ -439,6 +439,214 @@ def align_adapter(args):
     return bc_counts
 
 
+
+def align_adapter_multi(args, multi):
+    """
+    TODO
+    """
+    # Build align matrix and define the probe sequence for alignments
+    # Note: once CW-2853 is done, the 3prime reads will need flipping
+    matrix = update_matrix(
+        args.match, args.mismatch, args.acg_to_n_match, args.t_to_n_match)
+
+    # Use only the specified suffix length of adapter1
+    adapter1_probe_seq = args.adapter1_seq[-args.adapter1_suff_length:]
+    if multi == 'ArgenTAG':
+        linker1_list = ['ATCCACGTGCTTGAGA']
+        linker2_list= ['TCAGCATGCGGCTACG']
+    elif multi == 'GEXSCOPE-V2':
+        linker1_list = [
+            'ATCCACGTGCTTGAGA',
+            'TCGGTGACAGCCATAT',
+            'CGAACATGTAGGTCTC',
+            'GATTGTCACTAACGCG',
+        ]
+        linker2_list = [
+            'TCAGCATGCGGCTACG',
+            'CGTAGTCAGAAGCTGA',
+            'GACTACGTATTAGCAT',
+            'ATGCTGACTCCTAGTC',
+        ]
+    whitelist_files = [args.superlist + f'/../{multi}/bclist{i}' for i in range(1,4)]
+    patterns = []
+    for linker1,linker2 in zip(linker1_list, linker2_list):
+        probe_seq = "{a1}{bc}{linker1}{bc}{linker2}{bc}C{umi}{pt}".format(
+                a1=adapter1_probe_seq,
+                bc="N" * args.barcode_length,
+                umi="N" * args.umi_length,
+                pt="T" * args.polyt_length,
+                linker1=linker1,
+                linker2=linker2,
+            )
+        patterns.append(probe_seq)
+
+    with FastxFile(
+            str(args.fastq), "rb") as fastq_fh, \
+            open(args.output_read_tags, 'w') as tags_fh, \
+            open(args.output_trimmed_fastq, 'w') as fq_fh:
+
+        # Write the header
+        tags_fh.write("read_id\tCR\tCY\tUR\tUY\n")
+
+        barcode_counts = collections.Counter()
+
+        for read in fastq_fh:
+
+            if args.kit in (KitName.prime3, KitName.multiome):
+                # Flip back to barcode orientation (reverse)
+                prefix_seq = rev_cmp(read.sequence)[: args.window]
+                prefix_qv = read.quality[::-1][: args.window:]
+            else:
+                prefix_seq = read.sequence[: args.window]
+                prefix_qv = read.quality[: args.window]
+
+            aligns = []
+            for pattern in patterns:
+                p_alignment = parasail.sw_trace(
+                    s1=prefix_seq,
+                    s2=pattern,
+                    open=args.gap_open,
+                    extend=args.gap_extend,
+                    matrix=matrix,
+                )
+                aligns.append(p_alignment)
+            p_alignment = max(aligns, key=lambda x: x.score)
+
+            adapter1_ed, barcode, umi, bc_qscores, umi_qscores \
+                = parse_probe_alignment_multi(
+                    p_alignment, adapter1_probe_seq, args.barcode_length,
+                    args.umi_length, prefix_qv, prefix_seq
+                    )
+
+            # Require minimum read1 edit distance
+            if (adapter1_ed <= args.max_adapter1_ed) & \
+                    (len(barcode) > 0) & (len(umi) > 0):
+
+                bc_min_qv = min(ascii_decode_qscores(bc_qscores))
+                if bc_min_qv >= args.min_barcode_qv:
+                    barcode_counts[barcode] += 1
+
+                # Escape double quotes, with a precedding `"` in the quality strings
+                # see https://rfc-editor.org/rfc/rfc4180.html
+                umi_q_quoted = umi_qscores.replace('"', '""')
+                barcode_q_quoted = bc_qscores.replace('"', '""')
+
+                tags_fh.write('\t'.join([
+                    f'"{read.name}"', f'"{barcode}"', f'"{barcode_q_quoted}"',
+                    f'"{umi}"', f'"{umi_q_quoted}"']) + '\n')
+                # For full length reads, adapter2 already trimmed.
+                # Now the barcode and UMI have been extracted, these along with adapter1
+                # can be removed.
+
+                # The reads will be cDNA-polyA-UMI-BC-Adapter1,
+                # so to trim from right
+                trim_side = 'right'
+                trim_pos = p_alignment.end_query - 1
+                trim_pos -= args.polyt_length
+
+                write_trimmed_fastq(
+                    read,
+                    trim_pos,
+                    trim_side,
+                    fq_fh)
+
+    bc_counts = pd.DataFrame.from_dict(
+        barcode_counts,
+        columns=['count'],
+        orient='index').sort_values('count', ascending=False)
+    return bc_counts
+
+def get_bc_umi(target, barcode_length):
+    """
+    >>> target = "CTTCCGATCTNNNNNNNNNTCGGTGACAGCCATATNNNNNNNNNCGTAGTCAGAAGCTGANNNNNNNNNCNNNNNNNNNNNNTTTTT"
+    >>> barcode_length = 9
+    >>> bcs,umi = get_bc_umi(target, barcode_length)
+    """
+    n = len(target)
+    i = 0
+    bcs = []
+    umi = None
+    while i < n:
+        if target[i] != 'N':
+            i += 1
+            continue
+        start = i
+        while i<n and target[i] == 'N':
+            i += 1
+        cur = slice(start, i)
+        cur_len = i-start
+        if cur_len == barcode_length:
+            bcs.append(cur)
+        else:
+            umi = cur
+    return bcs, umi
+
+def parse_probe_alignment_multi(
+        p_alignment, adapter1_probe_seq, barcode_length, umi_length,
+        prefix_qual, prefix_seq
+        ):
+    """Parse probe alignment.
+
+    Regardless of kit, the sequences need to be in adapter orientation.
+    """
+    ref_alignment = p_alignment.traceback.ref
+    query_alignment = p_alignment.traceback.query
+    print("ref  : ", ref_alignment)
+    print("query: ",query_alignment)
+
+    # Find the position of the Ns in the alignment. These correspond
+    # to the cell barcode + UMI sequences bound by the read1 and polyT
+    bc_start_pos = ref_alignment.find('N')
+    bc_slice, umi_slice = get_bc_umi(ref_alignment, barcode_length)
+    if bc_start_pos > -1 and len(bc_slice)==3 and umi_slice:
+        # umi_end_pos = bc_start_pos + barcode_length + umi_length
+
+        # The alignment of the first N=<args.window> bases of the read
+        # to the probe sequence results in the following output, where
+        # the alignment around the Ns is anchored by adapter1 and polyT.
+        # The positions in the alignment might contain deletions, marked
+        # as a dash (-) in the query_alignment:
+        #
+        #      bc_start_pos               umi_end_pos
+        #           v                          v
+        # CTTCCGATCTNNNNNNNNNNNNNNNNNNNNNNNNNNNNTTTTTTTTT <-ref_alignment
+        # |||||||||||||||||||||||||||||||||||||||||||||||
+        # CTTCCGATCT-ATCAGTGATCCACTAGAGGGAGCCGTGTTTTTTTTT <-query_alignment
+        # |________||__________________________|
+        #  adapter1         barcode_umi
+
+        # The adapter1 sequence comprises the first part of the alignment
+        adapter1 = query_alignment[0:bc_start_pos]
+        adapter1_ed = ed.eval(adapter1, adapter1_probe_seq)
+
+        # try to correct barcode here
+        bcs = [query_alignment[bc] for bc in bc_slice]
+
+
+        barcode = "".join([query_alignment[bc] for bc in bc_slice])
+        barcode_no_ins = barcode.replace("-", "")
+        bc_q_ascii = "".join([prefix_qual[bc] for bc in bc_slice])
+        # ensure same length
+        bc_q_ascii = bc_q_ascii[:len(barcode_no_ins)]
+
+        umi = query_alignment[umi_slice]
+        umi_no_ins = umi.replace("-", "")
+        umi_q_ascii = prefix_qual[umi_slice]
+        umi_q_ascii = umi_q_ascii[:len(umi_no_ins)]
+
+    else:
+        # No Ns in the probe successfully aligned -- we will ignore this read
+        adapter1_ed = len(adapter1_probe_seq)
+        barcode_no_ins = ""
+        umi_no_ins = ""
+        bc_q_ascii = ""
+        umi_q_ascii = ""
+
+    return (
+        adapter1_ed, barcode_no_ins, umi_no_ins,
+        bc_q_ascii, umi_q_ascii
+    )
+
 def main(args):
     """Run entry point."""
     logger = get_named_logger('ExtractBC')
@@ -447,7 +655,17 @@ def main(args):
 
     logger.info(f"Extracting uncorrected barcodes from {args.fastq}")
 
-    barcode_counts = align_adapter(args)
+    multi = None
+    if "ArgenTAG" in args.superlist:
+        multi = "ArgenTAG"
+        args.window = 300
+    elif "GEXSCOPE-V2" in args.superlist:
+        multi = "GEXSCOPE-V2"
+        args.window = 200
+    if multi:
+        barcode_counts = align_adapter_multi(args, multi)
+    else:
+        barcode_counts = align_adapter(args)
 
     # Filter barcode counts against barcode superlist
     logger.info(

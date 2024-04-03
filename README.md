@@ -132,9 +132,9 @@ input_reads.fastq   ─── input_directory  ─── input_directory
 |--------------------------|------|-------------|------|---------|
 | fastq | string | FASTQ files to use in the analysis. | This accepts one of three cases: (i) the path to a single FASTQ file; (ii) the path to a top-level directory containing FASTQ files; (iii) the path to a directory containing one level of sub-directories which in turn contain FASTQ files. In the first and second case, a sample name can be supplied with `--sample`. In the last case, the data is assumed to be multiplexed with the names of the sub-directories as barcodes. In this case, a sample sheet can be provided with `--sample_sheet`. |  |
 | ref_genome_dir | string | The path to the 10x reference directory | Human reference data can be downloaded from 10x [here](https://cf.10xgenomics.com/supp/cell-exp/refdata-gex-GRCh38-2020-A.tar.gz). Instructions for preparing reference data can be found [here](https://www.10xgenomics.com/support/software/cell-ranger/tutorials/cr-tutorial-mr#overview) |  |
-| merge_bam | boolean | Merge BAM alignment files into a single BAM file per sample | Merging of BAM files can take a significant amount of time and uses additional disk space.  By default BAM files are output per chromosome. Set to true if a BAM file per sample is needed for downstream analyses. | False |
-| kit_name | string | 10x kit name | If `single_cell_sample_sheet` is not defined, kit_name is applied to all samples. This parameter is ignored if `single_cell_sample_sheet` is supplied. | 3prime |
-| kit_version | string | 10x kit version | 10x kits can be released with different versions, each requiring a specific whitelist that is looked-up by the workflow. If `single_cell_sample_sheet` is not defined, kit_version is applied to all samples. This parameter is ignored if `single_cell_sample_sheet` is supplied. 3prime kit options: [v2, v3]. For 5prime and multiome kits only `v1` is available. | v3 |
+| merge_bam | boolean | Merge BAM alignment files into a single BAM file per sample | Merging of BAM files can take a significant amount of time and uses additional disk space.  By default BAM files are output per chromosome. Set to true if a BAM file per sample is needed for downstream analyses. |  |
+| kit_name | string | 3prime or 5prime | If `single_cell_sample_sheet` is not defined, kit_name is applied to all samples. This parameter is ignored if `single_cell_sample_sheet` is supplied. | 3prime |
+| kit_version | string | kit version | 10x kits can be released with different versions, each requiring a specific whitelist that is looked-up by the workflow. If `single_cell_sample_sheet` is not defined, kit_version is applied to all samples. This parameter is ignored if `single_cell_sample_sheet` is supplied. 3prime kit options: [v2, v3]. For 5prime and multiome kits only `v1` is available. | ArgenTAG |
 | expected_cells | integer | Number of expected cells in the sample. | The number of expected cells. If `single_cell_sample_sheet` is not defined, `expected_cells` is applied to all samples. This parameter is ignored if `single_cell_sample_sheet` is supplied. | 500 |
 | full_length_only | boolean | Only process full length reads. | If set to true, only process reads or subreads that are classified as full length (read segments flanked by compatible adapters in the expected orientation). | True |
 
@@ -153,7 +153,7 @@ input_reads.fastq   ─── input_directory  ─── input_directory
 | Nextflow parameter name  | Type | Description | Help | Default |
 |--------------------------|------|-------------|------|---------|
 | out_dir | string | Directory for output of all workflow results. |  | output |
-| plot_umaps | boolean | Optionally generate UMAP plots. | If set to false (the default), UMAP projection and plotting will be skipped, which will speed up the workflow. | False |
+| plot_umaps | boolean | Optionally generate UMAP plots. | If set to false (the default), UMAP projection and plotting will be skipped, which will speed up the workflow. |  |
 
 
 ### Advanced options
@@ -173,19 +173,12 @@ input_reads.fastq   ─── input_directory  ─── input_directory
 | matrix_norm_count | integer | Normalize expression matrix to <matrix_norm_count> counts per cell. |  | 10000 |
 | umap_plot_genes | string | File containing a list of gene symbols (one symbol per line) to annotate with expression values in the UMAP projections. |  |  |
 | resources_mm2_max_threads | integer | Maximum allowed threads for the minimap2 stage. | The total CPU resource used by the workflow is constrained by the executor configuration. | 4 |
-| resources_mm2_flags | string | Optional flags for the minimap2 stage. | Minimap2 options can be supplied to modify the alignment parameters: eg '-I 4G' loads at max 4G bases into memory for indexing. | -I 16G |
+| resources_mm2_flags | string | Optional flags for the minimap2 stage. | Minimap2 options can be supplied to modify the alignment parameters: eg '-I 4G' loads at max 4G bases into memory for indexing. | -I 7G |
 | adapter_scan_chunk_size | integer | Chunk size for adapter scanning step. | Set the number of reads per chunk to process in the adapter_scan stage. If set to 0 (the default), the input reads will be split into one chunk per threads provided with `max_threads`. | 0 |
 | process_chunk_size | integer | Control the size of chunks for processing of data. | Several steps process the data into chunks of n reads/alignments. Use a smaller number to reduce peak memory use. | 100000 |
 | mito_prefix | string | Gene name prefix to identify for mitochondrial genes. | Parts of the workflow analyse mitochondrial genes separately. These genes are identified by searching for a gene name prefix. Human mitochondrial genes can be identified with prefix 'MT-' and mouse genes with prefix 'mt-'. If the reference genome contains data from multiple organisms with different nomenclature, multiple prefixes can be supplied like so: 'MT-,mt-' | MT- |
 | umap_n_repeats | integer | Number of UMAP projection to repeat for each dataset. | The UMAP algorithm contains elements of randomness that can mislead users into seeing associations between cells that are not meaningful. It is recommended to view multiple plots generated with the same parameters and check that any observed structure is consistent across runs. | 3 |
 | stringtie_opts | string | StringTie options for transcriptome assembly. | StringTie option string can be supplied at the command line as in this example: `--stringtie_opts="-c 5 -m 100 "`. StringTie options can be found here: http://ccb.jhu.edu/software/stringtie/index.shtml?t=manual. The default option (-c 2) ensures that only transcripts with a coverage of 2 or higher are included in the generated transcriptome | -c 2 |
-
-
-### Miscellaneous Options
-
-| Nextflow parameter name  | Type | Description | Help | Default |
-|--------------------------|------|-------------|------|---------|
-| disable_ping | boolean | Enable to prevent sending a workflow ping. |  | False |
 
 
 
