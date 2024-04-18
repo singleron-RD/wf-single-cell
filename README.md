@@ -16,7 +16,7 @@ nextflow run wf-single-cell \
     --barcode_max_ed 3 \
     -profile standard \
     -resume \
-``
+```
 
 # Single cell workflow
 
