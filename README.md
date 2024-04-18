@@ -4,6 +4,20 @@
 > TODO:
 > Add barcode correction to extract_barcode.py. Although downstream analysis also has steps to correct barcode, it is based on the logic of a single segment of barcode.
 
+## GEXSCOPE-V2
+```
+git clone https://github.com/zhouyiqi91/wf-single-cell.git
+nextflow run wf-single-cell \
+    --fastq {fastq.gz} \
+    --ref_genome_dir {ref_genome_dir} \
+    --kit_name '3prime' \
+    --kit_version 'GEXSCOPE-V2' \
+    --expected_cells 3000 \
+    --barcode_max_ed 3 \
+    -profile standard \
+    -resume \
+``
+
 # Single cell workflow
 
 Identification of cell- and UMI barcodes from single-cell sequencing.
