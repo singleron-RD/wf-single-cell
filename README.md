@@ -1,19 +1,17 @@
 > [!NOTE]
 > The original pipeline can only analyze data from 10X genomics. The code was modified to extend the analysis of data containing multiple barcodes.
 > The main code modifications are in `bin/workflow_glue/extract_barcode.py`.
-> TODO:
-> Add barcode correction to extract_barcode.py. Although downstream analysis also has steps to correct barcode, it is based on the logic of a single segment of barcode.
 
-## GEXSCOPE-V2
+
+## Singleron GEXSCOPE-V2 kit. (renamed from scopeV3.0.1)
 ```
-git clone https://github.com/zhouyiqi91/wf-single-cell.git
-nextflow run wf-single-cell \
+nextflow run singleron-RD/wf-single-cell \
     --fastq {fastq.gz} \
     --ref_genome_dir {ref_genome_dir} \
     --kit_name '3prime' \
     --kit_version 'GEXSCOPE-V2' \
-    --expected_cells 3000 \
-    --barcode_max_ed 3 \
+    --expected_cells 5000 \
+    --barcode_max_ed 5 \
     -profile standard \
     -resume \
 ```
@@ -78,7 +76,7 @@ More information on running EPI2ME workflows can be found on our [website](https
 The following command can be used to obtain the workflow. This will pull the repository in to the assets folder of nextflow and provide a list of all parameters available for the workflow as well as an example command:
 
 ```
-nextflow run zhouyiqi91/wf-single-cell –help
+nextflow run singleron-RD/wf-single-cell –help
 ```
 
 A demo dataset is provided for testing of the workflow. It can be downloaded using:
@@ -91,7 +89,7 @@ wget https://ont-exd-int-s3-euwst1-epi2me-labs.s3.amazonaws.com/wf-single-cell/w
 The workflow can be run with the demo data using:
 
 ```
-nextflow run zhouyiqi91/wf-single-cell \
+nextflow run singleron-RD/wf-single-cell \
     --fastq wf-single-cell-demo/chr17.fq.gz \
     --kit_name 3prime \
     --kit_version v3 \

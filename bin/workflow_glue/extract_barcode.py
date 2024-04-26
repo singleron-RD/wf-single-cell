@@ -451,7 +451,7 @@ def align_adapter_multi(args, multi):
 
     # Use only the specified suffix length of adapter1
     adapter1_probe_seq = args.adapter1_seq[-args.adapter1_suff_length:]
-    if multi == 'ArgenTAG':
+    if multi in ('ArgenTAG','GEXSCOPE-V1'):
         linker1_list = ['ATCCACGTGCTTGAGA']
         linker2_list= ['TCAGCATGCGGCTACG']
     elif multi == 'GEXSCOPE-V2':
@@ -661,6 +661,9 @@ def main(args):
         args.window = 300
     elif "GEXSCOPE-V2" in args.superlist:
         multi = "GEXSCOPE-V2"
+        args.window = 200
+    elif "GEXSCOPE-V1" in args.superlist:
+        multi = "GEXSCOPE-V1"
         args.window = 200
     if multi:
         barcode_counts = align_adapter_multi(args, multi)
