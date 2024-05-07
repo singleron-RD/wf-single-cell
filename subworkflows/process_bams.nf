@@ -179,7 +179,6 @@ process combine_bams_and_tags {
     // Merge all BAM and tags files chunks
     label "wf_common"
     cpus Math.min(8, params.max_threads)
-    memory "8 GB"
     input:
         tuple val(meta),
               path('bams/*aln.bam'),
