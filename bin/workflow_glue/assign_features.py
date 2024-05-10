@@ -1,5 +1,5 @@
-#!/usr/bin/env python
 """Assign reference genes and transcripts to read_id."""
+from pathlib import Path as Path
 import re
 
 import pandas as pd
@@ -13,57 +13,33 @@ def argparser():
     parser = wf_parser("assign_features")
 
     parser.add_argument(
-        "--transcriptome_bam",
-        help="Bam file from alignment of reads to the assembled transcriptome."
-    )
-
+        "transcriptome_bam", type=Path,
+        help="Bam file from alignment of reads to the assembled transcriptome.")
     parser.add_argument(
-        "--gffcompare_tmap",
-        help="The .tmap output from gffcompare"
-    )
-
+        "gffcompare_tmap", type=Path,
+        help="The .tmap output from gffcompare")
     parser.add_argument(
-        "--gtf",
-        help="GTF for chromosome. Should contain gene_id and gene_name "
-    )
-
+        "gtf", type=Path,
+        help="GTF for chromosome. Should contain gene_id and gene_name.")
     parser.add_argument(
-        "--tags",
-        help="TSV file with read_id index and genomic alignment mapq column."
-    )
-
+        "tags", type=Path,
+        help="TSV file with read_id index and genomic alignment mapq column.")
     parser.add_argument(
-        "--output",
-        help="Path to output file"
-    )
-
+        "output", type=Path,
+        help="Path to output file")
     parser.add_argument(
-        "--chunksize",
-        type=int,
-        default=10000,
-        help="Process the BAM in chunks no larger than this."
-    )
-
+        "--chunksize", type=int, default=100000,
+        help="Process the BAM in chunks no larger than this.")
     parser.add_argument(
-        "--min_tr_coverage",
-        type=int,
-        default=0.4,
-        help="Minimum transcript coverage for assignment."
-    )
-
+        "--min_tr_coverage", type=float, default=0.4,
+        help="Minimum transcript coverage for assignment.")
     parser.add_argument(
-        "--min_read_coverage",
-        type=int,
-        default=0.4,
-        help="Minimum read coverage for assignment."
-    )
-
+        "--min_read_coverage", type=int, default=0.4,
+        help="Minimum read coverage for assignment.")
     parser.add_argument(
-        "--min_mapq",
+        "--min_mapq", type=int, default=30,
         help="mapq threshold from genomic alignment above which reads will be assigned "
-             "a gene and transcript",
-        type=int, default=30
-    )
+             "a gene and transcript")
     return parser
 
 
@@ -96,9 +72,12 @@ def parse_gtf(annotation_file):
 
 
 def parse_bam(transcriptome_bam, chunksize):
-    """Parse the transcriptome alignment BAM sorted by name.
+    """Create batched dataframes summarising alignments.
 
-    Yield chunks with a maximum size 100,000
+    Alignments with equal query name are guaranteed to be grouped in one batch
+    provided the input file is namesorted.
+
+    :param chunksize: (approximate) number of alignments to yield in one go.
     """
     cols = [
         'read_id', 'query_transcript', 'aln_score', 'tr_cov', 'q_cov', 'tr_mapq']
@@ -156,17 +135,17 @@ def main(args):
     logger = get_named_logger('AssignFeat')
     logger.info('Assigning genes and transcripts to reads.')
 
-    # Load genomic alignment mapq scores for filtering gene calls
+    logger.info("Loading mapping quality from genomic alignment.")
     df_genomic_mapq = pd.read_csv(
         args.tags, sep='\t', index_col=0, usecols=['read_id', 'mapq'])
     df_genomic_mapq.rename(columns={'mapq': 'genome_mapq'}, inplace=True)
 
     # Load gffcompare output that maps query transcript to reference transcript
+    logger.info("Loading gffcompare output.")
     df_gffcompare_tmap = pd.read_csv(
-        args.gffcompare_tmap,
-        index_col=None,
-        sep='\t')
+        args.gffcompare_tmap, index_col=None, sep='\t')
 
+    logger.info("Loading annotation.")
     df_ann = parse_gtf(args.gtf)
 
     # Write dataframe header to file
@@ -174,7 +153,10 @@ def main(args):
         columns=['gene', 'transcript']).to_csv(
         args.output, sep='\t', header=True)
 
+    logger.info("Processing BAM.")
+    total_alignments = 0
     for df in parse_bam(args.transcriptome_bam, args.chunksize):
+        total_alignments += len(df)
 
         # Merge the read alignments with the gffcompare tmap output to
         # assign read_id to the reference transcript.
@@ -212,49 +194,71 @@ def main(args):
         df_uniqmap = df_uniqmap.loc[
             df_uniqmap.tr_mapq > 0][['read_id', 'gene', 'transcript']]
 
-        assigned = []
+        # Proces the multi-mapping reads
+        # find the best transcript per read.
+        # pseudo code:
+        #   for each read:
+        #       # to assign a gene
+        #       sort aligns by mapq and take best
+        #       # to assign a transcript
+        #       if (best aln score unique) or (q_cov of best aln unique):
+        #           and if tr_cov of best aln > min_tr_coverage
+        #           and if q_cov of best aln > min_read_coverage
+        #               then assign best aln transcript
+        #       elif (tr_cov of best aln > 0.8 and tr_cov of best aln unique):
+        #           assign best aln transcript
+        #       else
+        #           assign "-"
 
-        # Attempt to choose one of the multi-mapped alignments
-        for read_id, df_read in df_multimap.groupby('read_id'):
-            df_read.sort_values(
-                ['aln_score', 'q_cov', 'tr_cov'], ascending=False, inplace=True)
+        df_multimap = df_multimap.sort_values(
+            ['read_id', 'aln_score', 'q_cov', 'tr_cov'], ascending=False)
 
-            tr = '-'
-            # Choose alignment with the best alignment score or query coverage
-            if (
-                    df_read.iloc[0].aln_score > df_read.iloc[1].aln_score
-                    or df_read.iloc[0].q_cov > df_read.iloc[1].q_cov
-            ):
-                # Assign if there is enough read coverage
-                if df_read.iloc[0].tr_cov >= args.min_tr_coverage and \
-                        df_read.iloc[0].q_cov >= args.min_read_coverage:
-                    tr = df_read.iloc[0].transcript
+        # find the best gene per read. Note this corrects two bugs in the previous code:
+        #    1. previous was taking worst mapq: .sort_value().iloc[0]
+        #    2. previous was score > minmapq, but should be >=
+        read_groups = df_multimap.groupby('read_id', sort=False)
+        idx = read_groups['genome_mapq'].idxmax()
+        best_gene = df_multimap.loc[idx].set_index('read_id')
+        best_gene.loc[best_gene['genome_mapq'] < args.min_mapq, "gene"] = "-"
+        best_gene = best_gene[["gene"]]
 
-            # If there's an alignment score (AS) and read coverage tie,
-            # but a higher transcript coverage
-            elif df_read.iloc[0].tr_cov > df_read.iloc[1].tr_cov:
-                if df_read.iloc[0].tr_cov > 0.8:
-                    tr = df_read.iloc[0].transcript
+        # calculate diffs between consecutive rows, we only care about the
+        # first difference
+        df_multimap['as_diff'] = read_groups["aln_score"].diff() != 0
+        df_multimap['q_cov_diff'] = read_groups["q_cov"].diff() != 0
+        df_multimap['tr_cov_diff'] = read_groups["tr_cov"].diff() != 0
+        stats = read_groups.nth(1).set_index('read_id')[
+            ['as_diff', 'q_cov_diff', 'tr_cov_diff']]
 
-            # Assign gene
-            top_gene = df_read.sort_values('genome_mapq').iloc[0]
-            if top_gene.genome_mapq > args.min_mapq:
-                gene = top_gene.gene
-            else:
-                gene = '-'
-            assigned.append([read_id, tr, gene])
+        # calculate conditions for the if
+        stats["cond1"] = stats['as_diff'] | stats['q_cov_diff']
 
-        # Merge the resolved multimapped alignments back with the unique mapper
-        df_demultimapped = pd.DataFrame.from_records(
-            assigned, columns=['read_id', 'transcript', 'gene'])
+        # the and conditions for the if
+        stats["good_tr_cov"] = (
+            read_groups.nth(0).set_index('read_id')["tr_cov"] >= args.min_tr_coverage)
+        stats["good_read_cov"] = (
+            read_groups.nth(0).set_index('read_id')["q_cov"] >= args.min_read_coverage)
+        stats["cond2"] = stats["good_tr_cov"] & stats["good_read_cov"]
+
+        # conditions for the elif
+        stats["ok_tr_cov"] = read_groups.nth(0).set_index('read_id')["tr_cov"] > 0.8
+        stats["cond3"] = stats['tr_cov_diff'] & stats['ok_tr_cov']
+
+        # combine the if-elif conditions
+        keep = (stats["cond1"] & stats["cond2"]) | (~stats["cond1"] & stats["cond3"])
+        stats["transcript"] = read_groups.nth(0).set_index('read_id')["transcript"]
+        stats.loc[~keep, "transcript"] = "-"
+        stats = stats[["transcript"]]
+
+        # create a final table with the best gene and transcript
+        df_demultimapped = stats.join(best_gene).reset_index(drop=False)
+
+        # tidy up and write out the chunk
         df_assigned = pd.concat([df_uniqmap, df_demultimapped])
-
         df_assigned = df_assigned.loc[
             (df_assigned.gene != '-') | (df_assigned.transcript != '-')]
-
         df_assigned.set_index('read_id', drop=True, inplace=True)
-
         df_assigned = df_assigned.fillna('-')[['gene', 'transcript']]
-
-        # Write the processed chunk
         df_assigned.to_csv(args.output, mode='a', sep='\t', header=False)
+        logger.info(f"Processed {total_alignments} alignments.")
+    logger.info("Finished.")

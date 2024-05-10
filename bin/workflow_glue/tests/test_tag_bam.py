@@ -1,11 +1,12 @@
 """Test tag_bam.py"."""
+from pathlib import Path
 import subprocess as sub
 import tempfile
 
 import pandas as pd
 import pysam
 import pytest
-from workflow_glue.tag_bam import main
+from workflow_glue import tag_bam
 
 
 @pytest.fixture
@@ -23,9 +24,7 @@ def input_bam(read):
     Each entry has the same the same random sequence but a unique read_id.
     """
     header = """@SQ	SN:chr17	LN:10000000"""
-
     read_ids = ['read1', 'read2']
-
     entries = [f'{header}']
 
     for read_id in read_ids:
@@ -62,8 +61,12 @@ def tags_file():
          'YFG1', 'YFT2')
 
     )
-    tags_df = pd.DataFrame(
-        tags_rows, columns=tags_header).set_index('read_id', drop=True)
+    tags_df = (
+        pd.DataFrame(tags_rows, columns=tags_header)
+        .set_index('read_id', drop=True)
+        .rename(
+            columns={v: k for k, v in tag_bam.BAM_TAGS.items()})
+    )
     tags = tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False)
     tags_df.to_csv(tags.name, sep='\t')
 
@@ -73,18 +76,11 @@ def tags_file():
 def test_add_tags(tags_file, input_bam):
     """Check that the output - bams and tag file - are correct."""
     # create_inputs
-    class Args:
-        in_bam = input_bam
-        tags = tags_file
-        out_bam = tempfile.NamedTemporaryFile('w', suffix='.bam').name
-        chrom = 'chr17'
-        flip = True
-
-    args = Args()
-    main(args)
+    out_bam = tempfile.NamedTemporaryFile('w', suffix='.bam').name
+    tag_bam.add_tags(Path(tags_file), input_bam, out_bam, 1)
 
     # Check that the correct tags have been set
-    with pysam.AlignmentFile(args.out_bam, "rb") as bam_result:
+    with pysam.AlignmentFile(out_bam, "rb") as bam_result:
         for align in bam_result:
             read_id = align.query_name
             # Check that some of the tags have been set correctly

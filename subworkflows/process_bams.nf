@@ -1,56 +1,57 @@
 import java.util.ArrayList;
 
-process get_contigs {
+
+process split_gtf_by_chroms {
     label "singlecell"
     cpus 1
+    memory "1 GB"
     input:
-        tuple val(meta),
-              path('sample.bam'),
-              path('sample.bam.bai')
-
+        path("ref.gtf")
     output:
-        tuple path("${meta.alias}_contigs"),
-            val(meta),
-            emit: contigs
+        path("*"), emit: chrom_gtf
     """
-    samtools idxstats sample.bam \
-        | gawk '/^[^*]/{print\$1}' \
-        | gawk NF > "${meta.alias}_contigs"
+    gawk '/^[^#]/ {print>\$1".gtf"}' ref.gtf 
     """
-}
+}   
+
 
 process generate_whitelist{
     label "singlecell"
-    cpus 1
+    cpus 4
+    memory "4 GB"
+    publishDir "${params.out_dir}/${meta.alias}", mode: 'copy'
     input:
         tuple val(meta),
               path("barcodes/?_barcode.tsv")
-        path("barcode_longlist_dir")
     output:
         tuple val(meta),
-              path("*whitelist.tsv"), 
+              path("whitelist.tsv"),
               emit: whitelist
         tuple val(meta),
-              path("*kneeplot.png"), 
+              path("kneeplot.png"),
               emit: kneeplot
-        tuple val(meta),
-              path("${meta.alias}.uncorrected_bc_counts.tsv"), 
-              emit: uncorrected_bc_counts
+        // Note: This is called "uncorrected", but they're actually counts of
+        //       high quality exact matches to longlist. Low frequency barcodes
+        //       are assumed to be false positives. The list is further
+        //       filtered by the selected method (basically by abundance).
+    // TODO: change this to take precomputed, filtered counts from extract_barcodes
     """
-    workflow-glue knee_plot \
-        --barcodes_dir barcodes/ \
-        --long_list "barcode_longlist_dir/${meta['bc_long_list']}" \
+    workflow-glue create_shortlist \
+        barcodes whitelist.tsv \
+        --counts \
+        --method quantile \
         --exp_cells ${meta['expected_cells']} \
-        --output_whitelist "${meta.alias}.whitelist.tsv" \
-        --output_plot "${meta.alias}.kneeplot.png" \
-        --output_uncorrected_barcodes "${meta.alias}.uncorrected_bc_counts.tsv"
+        --plot "kneeplot.png" \
+        --counts_out "high_qual_bc_counts.tsv" \
+        --threads ${task.cpus}
     """
 }
+
 
 process assign_barcodes{
     label "singlecell"
     cpus 1
-    memory 1.5.GB
+    memory "2 GB"
     input:
          tuple val(meta),
                path("whitelist.tsv"),
@@ -64,169 +65,66 @@ process assign_barcodes{
               emit: tags
     """
     workflow-glue assign_barcodes \
-        --output_tags extract_barcodes_with_bc.tsv \
-        --output_counts bc_assign_counts.tsv \
-        --max_ed $params.barcode_max_ed \
-        --min_ed_diff $params.barcode_min_ed_diff \
-        --extract_barcode_tags extract_barcodes.tsv \
-        --chunksize $params.process_chunk_size \
-        --whitelist whitelist.tsv
-    """
-}
-
-process split_gtf_by_chroms {
-    label "singlecell"
-    cpus 1
-    input:
-        path("ref.gtf")
-    output:
-        path("*"), emit: chrom_gtf
-    """
-    gawk '/^[^#]/ {print>\$1".gtf"}' ref.gtf 
-    """
-}   
-
-process cluster_umis {
-    label "singlecell"
-    cpus 1
-    // Benchmarking showed that memory usage was ~ 15x the size of read_tags input.
-    // Set a minimum memory requirement of 1.0GB to allow for overhead.
-    memory {1.0.GB.toBytes()  + (read_tags.size() * 20) }
-    input:
-        tuple val(meta),
-              val(chr),
-              path("chrom_feature_assigns.tsv"),
-              path(read_tags, stageAs: "read_tags.tsv")
-    output:
-        tuple val(meta),
-              val(chr),
-              path("${meta.alias}_${chr}.read_tags.tsv"),
-              emit: read_tags  // For BAM tagging
-        tuple val(meta),
-              path("${meta.alias}_${chr}.final_tags.tsv"),
-              emit: final_read_tags  // For user output
-    """
-    workflow-glue cluster_umis \
-        --chrom ${chr} \
-        --feature_assigns chrom_feature_assigns.tsv \
-        --read_tags read_tags.tsv \
-        --output_read_tags "${meta.alias}_${chr}.read_tags.tsv" \
-        --workflow_output "${meta.alias}_${chr}.final_tags.tsv"
-    """
-}
-
-process tag_bams {
-    label "singlecell"
-    cpus 1
-    input:
-        tuple val(meta),
-              path("align.bam"),
-              path("align.bam.bai"),
-              val(chr),
-              path('tags.tsv')
-    output:
-         tuple val(meta),
-              path("${meta.alias}.${chr}.tagged.bam"),
-              path("${meta.alias}.${chr}.tagged.bam.bai"),
-              emit: tagged_bam
-    script:
-    """
-    workflow-glue tag_bam \
-        --in_bam align.bam \
-        --tags tags.tsv \
-        --out_bam ${meta.alias}.${chr}.tagged.bam \
-        --chrom ${chr}
-
-    samtools index ${meta.alias}.${chr}.tagged.bam
-    """
-}
-
-process combine_tag_files {
-    // A file named 'read_tags' is a required output.
-    // collectFile's 'name' argument does not work when being applied to
-    // a channel that returns tuples. It groups and names according to the
-    // first element of the tuple. Hence this process.
-    label "singlecell"
-    cpus 1
-    input:
-        tuple val(meta),
-              path("tags*.tsv")
-    output:
-        tuple val(meta),
-              path("${meta.alias}_read_tags.tsv")
-    """
-    awk 'FNR>1 || NR==1' *.tsv > "${meta.alias}_read_tags.tsv"
-    """
-}
-
-process combine_final_tag_files {
-    // Combine the final
-    label "singlecell"
-    cpus 1
-    input:
-        tuple val(meta),
-              path("tags*.tsv")
-    output:
-        tuple val(meta),
-              path("${meta.alias}.read_tags.tsv")
-    """
-    awk 'FNR>1 || NR==1' *.tsv > "${meta.alias}.read_tags.tsv"
+        whitelist.tsv extract_barcodes.tsv \
+        extract_barcodes_with_bc.tsv bc_assign_counts.tsv \
+        --max_ed ${params.barcode_max_ed} \
+        --min_ed_diff ${params.barcode_min_ed_diff}
     """
 }
 
 
-process combine_bams_and_tags {
-    // Merge all BAM and tags files chunks
+process merge_bams {
+    // Combine all BAMs derived from the initial chunking into per sample files
     label "wf_common"
-    cpus Math.min(8, params.max_threads)
-    input:
-        tuple val(meta),
-              path('bams/*aln.bam'),
-              path('bams/*.aln.bam.bai'),
-              path('tags/*tags.tsv')
-    output:
-        tuple val(meta),
-              path("*tagged.sorted.bam"), 
-              path("*tagged.sorted.bam.bai"),
-              emit: merged_bam
-        tuple val(meta),
-              path("chr_tags/*"),
-              emit: merged_tags
-    """
-    samtools merge -@ ${task.cpus -1} --write-index -o "${meta.alias}.tagged.sorted.bam##idx##${meta.alias}.tagged.sorted.bam.bai" bams/*.bam
-
-    mkdir chr_tags
-    # merge the tags TSVs, keep header from first
-    csvtk concat -tT tags/* \
-        | csvtk split -tl -f chr -o chr_tags/
-    # Strip appended source filename ("stdin-"") from the split TSVs
-    for file in chr_tags/*; do mv "\${file}" "\${file//stdin-//}"; done
-    """
-}
-
-process combine_chrom_bams {
-    // Merge all chromosome bams by sample_id
-    label "wf_common"
-    cpus Math.min(8, params.max_threads)
+    cpus params.threads
     memory "8 GB"
     input:
         tuple val(meta),
-              path(chrom_bams),
-              path('chrom.bam.bai')
+            path('bams/*aln.bam'),
+            path('bams/*aln.bam.bai')
     output:
         tuple val(meta),
-              path("*tagged.sorted.bam"),
-              path("*tagged.sorted.bam.bai"),
-              emit: bam_fully_tagged
+              path("merged.sorted.bam"),
+              path("merged.sorted.bam.bai"),
+              emit: merged_bam
+    script:
     """
-    samtools merge -@ ${task.cpus - 1} --write-index -o "${meta.alias}.tagged.sorted.bam##idx##${meta.alias}.tagged.sorted.bam.bai" ${chrom_bams};
+    samtools merge -@ ${task.cpus -1} --write-index -o "merged.sorted.bam##idx##merged.sorted.bam.bai" bams/*.bam
+    """
+}
+
+
+process cat_tags_by_chrom {
+    // Merge per-chunk tags to create per-chromosome tags
+    label "wf_common"
+    cpus params.threads
+    memory "8 GB"
+    input:
+        tuple val(meta),
+              path('tags/*tags.tsv')
+    output:
+         tuple val(meta),
+              path("chr_tags/*"),
+              emit: merged_tags
+
+    """
+    mkdir chr_tags
+    # Find the chr column number
+    files=(tags/*)
+    chr_col=\$(awk -v RS='\t' '/chr/{print NR; exit}' "\${files[0]}")
+
+    # merge the tags TSVs, keep header from first file and split entries by chromosome
+    awk -F'\t' -v chr_col=\$chr_col 'FNR==1{hdr=\$0; next} \
+    {if (!seen[\$chr_col]++) \
+        print hdr>"chr_tags/"\$chr_col".tsv"; \
+        print>"chr_tags/"\$chr_col".tsv"}' tags/*
     """
 }
 
 
 process stringtie {
     label "singlecell"
-    cpus Math.max(params.max_threads / 4, 4.0)
+    cpus params.threads
     // Memory usage for this process is usually less than 3GB, but some cases it may go over this.
     memory = { 3.GB * task.attempt }
     maxRetries = 3
@@ -243,41 +141,38 @@ process stringtie {
     output:
         tuple val(meta),
               val(chr),
-              path("${meta.alias}.transcriptome.fa"),
+              path("transcriptome.fa"),
               path("chr.gtf"),
-              path("${meta.alias}.stringtie.gff"),
-              path("reads.fastq"),
+              path("stringtie.gff"),
+              path("reads.fastq.gz"),
               emit: read_tr_map
     script:
     """
     # Add chromosome label (-l) to generated transcripts
     # so we don't get name collisions during file merge later
     samtools view -h align.bam ${chr}  \
-         | tee >(stringtie -L ${params.stringtie_opts} -p ${task.cpus} -G chr.gtf -l "${chr}.stringtie" \
-             -o "${meta.alias}.stringtie.gff" - ) \
-         | samtools fastq > reads.fastq
+        | tee >(
+            stringtie -L ${params.stringtie_opts} -p ${task.cpus} \
+                -G chr.gtf -l "${chr}.stringtie" -o "stringtie.gff" - ) \
+        | samtools fastq \
+        | bgzip --threads 2 -c > reads.fastq.gz
     # Get transcriptome sequence
-    gffread -g ref_genome.fa -w "${meta.alias}.transcriptome.fa" "${meta.alias}.stringtie.gff"
+    gffread -g ref_genome.fa -w "transcriptome.fa" "stringtie.gff"
     """
 }
 
 
 process align_to_transcriptome {
     label "singlecell"
-    cpus Math.max(params.max_threads / 10, 4.0)
-    // The average memory required for this step is usually ~ 4-5GB. However peak RSS scales with reference size but
-    // not all that predicatably. So until a better memory heuristic is found, employ a error strategy where
-    // the default 5GB is increased by 5GB upon each error, up to a maximum value of 25GB
-    memory = { 5.GB  * task.attempt }
-    maxRetries = 5
-    errorStrategy = { task.exitStatus in 137..140 ? 'retry' : 'terminate' }
+    cpus params.threads
+    memory = "32 GB"
     input:
         tuple val(meta),
               val(chr),
               path('transcriptome.fa'),
               path('chr.gtf'),
               path('stringtie.gff'),
-              path("reads.fq")
+              path("reads.fq.gz")
     output:
         tuple val(meta),
               val(chr),
@@ -286,40 +181,38 @@ process align_to_transcriptome {
               path('stringtie.gff'),
               emit: read_tr_map
     script:
-    // Provide at least 2 cores to mm2
-    def mm2_threads = Math.max(task.cpus - 3, 2)
-    // Remove the mm2 + samtools view cores and give the rest to sorting
-    def st_threads = Math.max(task.cpus - 1 - mm2_threads, 1)
+    def view_threads = 1
+    def sort_threads = 3
+    def mm2_threads = Math.max(task.cpus - view_threads - sort_threads, 4)
     """
     minimap2 -ax map-ont \
-        --end-bonus 10 \
-        -p 0.9 \
-        -N 3 \
-        -t $mm2_threads \
-        transcriptome.fa \
-        reads.fq \
-        | samtools view -h -@ 1 -b -F 2052 - \
-        | samtools sort -n -@ $st_threads --no-PG - > tr_align.bam
+        --cap-kalloc 100m --cap-sw-mem 50m \
+        --end-bonus 10 -p 0.9 -N 3 -t $mm2_threads \
+        transcriptome.fa reads.fq.gz \
+    | samtools view -h -@ $view_threads -b -F 2052 - \
+    | samtools sort -n -@ $sort_threads --no-PG - > tr_align.bam
     """
 }
 
 
 process assign_features {
     label "singlecell"
-    // Benchmarking showed that memory usage scales with tags file size.
-    memory { 1.0.GB.toBytes() + (tags.size() * 2 ) }
     cpus 1
+    // This step is performed per-chromosome. The tags file per chrom can vary
+    // quite widely in size. We don't have a fixed memory size here in order
+    // to get better parallelism on single-host setups.
+    memory { 1.0.GB.toBytes() + (tags.size() * 2 ) }
     input:
         tuple val(meta),
               val(chr),
               path("chr.gtf"),
               path("tr_align.bam"),
-              path('stringtie.gff'),
-              path(tags, stageAs: 'tags.tsv')
+              path("stringtie.gff"),
+              path(tags, stageAs: "tags.tsv")
     output:
         tuple val(meta),
               val(chr),
-              path("${meta.alias}.${chr}.feature_assigns.tsv"),
+              path("feature_assigns.tsv"),
               emit: feature_assigns
         tuple val(meta),
               path("gffcompare.annotated.gtf"),
@@ -329,128 +222,142 @@ process assign_features {
     gffcompare -o gffcompare -r chr.gtf stringtie.gff
 
     workflow-glue assign_features \
-        --transcriptome_bam tr_align.bam \
-        --gffcompare_tmap gffcompare.stringtie.gff.tmap \
-        --gtf chr.gtf \
-        --tags tags.tsv \
-        --chunksize $params.process_chunk_size \
-        --output "${meta.alias}.${chr}.feature_assigns.tsv" \
+        tr_align.bam \
+        gffcompare.stringtie.gff.tmap \
+        chr.gtf \
+        tags.tsv \
+        feature_assigns.tsv \
         --min_mapq ${params.gene_assigns_minqv}
     """
 }
 
-process umi_gene_saturation {
-    label "singlecell"
-    cpus 4
-    input:
-        tuple val(meta),
-              path("read_tags.tsv")
-    output:
-        tuple val(meta),
-              path("*saturation_curves.png"),
-              emit: saturation_curve
-    """
-    export POLARS_MAX_THREADS=$task.cpus
 
-    workflow-glue calc_saturation \
-        --output "${meta.alias}.saturation_curves.png" \
-        --read_tags read_tags.tsv
+// Create expression matrices by combining barcode and feature
+// tag files. Also outputs the combined tags (per-chrom) to be combined later
+process create_matrix {
+    label "singlecell"
+    cpus 1
+    // Benchmarking showed that memory usage was ~ 15x the size of read_tags input.
+    // Set a minimum memory requirement of 1.0GB to allow for overhead.
+    memory {1.0.GB.toBytes()  + (read_tags.size() * 20) }
+    input:
+        tuple val(meta), val(chr), path("features.tsv"), path(read_tags, stageAs: "barcodes.tsv")
+    output:
+        tuple val(meta), val(chr), path("summary.tsv"), emit: summary
+        tuple val(meta), val(chr), val("gene"), path("expression.gene.hdf"), emit: gene
+        tuple val(meta), val(chr), val("transcript"), path("expression.transcript.hdf"), emit: transcript
+        tuple val(meta), val(chr), path("stats.json"), emit: stats
+    """
+    workflow-glue create_matrix \
+        ${chr} barcodes.tsv features.tsv \
+        --tsv_out summary.tsv \
+        --hdf_out expression.hdf \
+        --stats stats.json
     """
 }
 
-process construct_expression_matrix {
-    label "singlecell"
-    cpus 1
-    input:
-        tuple val(meta),
-              path("read_tags.tsv")
-    output:
-        tuple val(meta),
-              path("*gene_expression.counts.tsv"),
-              path("*transcript_expression.counts.tsv"),
-              emit: matrix_counts_tsv
-    """
-    workflow-glue gene_expression \
-        --output_prefix "${meta.alias}" \
-        --read_tags read_tags.tsv
-    """
-}
 
-process process_expression_matrix {
+// Combines multiple expression matrices (e.g. from different chromosomes)
+// and calculates summary information on the matrix including UMAPs
+process process_matrix {
     label "singlecell"
-    cpus 1
+    cpus  1
+    memory "16 GB"
+    publishDir "${params.out_dir}/${meta.alias}", mode: 'copy', pattern: "*{mito,umap,raw,processed}*"
     input:
-        tuple val(meta),
-              path("gene_matrix_counts.tsv"),
-              path("transcript_matrix_counts.tsv")
+        tuple val(meta), val(feature), path('inputs/matrix*.hdf')
     output:
-        tuple val(meta),
-              val('gene'),
-              path("${meta.alias}.gene_expression.processed.tsv"),
-              emit: gene_matrix_processed_tsv
-        tuple val(meta),
-              val('transcript'),
-              path("${meta.alias}.transcript_expression.processed.tsv"),
-              emit: transcript_matrix_processed_tsv
-        tuple val(meta),
-              path("${meta.alias}.gene_expression.mito.tsv"),
-              emit: mito_expression_tsv
+        tuple val(meta), val(feature), path("${feature}_raw_feature_bc_matrix"), emit: raw
+        tuple val(meta), val(feature), path("${feature}_processed_feature_bc_matrix"), emit: processed
+        tuple val(meta), val(feature), path("${feature}.expression.mean-per-cell.tsv"), emit: meancell
+        tuple val(meta), val(feature), path("${feature}.expression.mito-per-cell.tsv"), emit: mitocell
+        tuple val(meta), val(feature), path("${feature}.expression.umap*.tsv"), emit: umap
+    script:
+    def mito_prefixes = params.mito_prefix.replaceAll(',', ' ')
     """
+    export NUMBA_NUM_THREADS=${task.cpus}
     workflow-glue process_matrix \
-        --min_genes $params.matrix_min_genes \
+        inputs/matrix*.hdf \
+        --feature ${feature} \
+        --raw ${feature}_raw_feature_bc_matrix \
+        --processed ${feature}_processed_feature_bc_matrix \
+        --per_cell_mito ${feature}.expression.mito-per-cell.tsv \
+        --per_cell_expr ${feature}.expression.mean-per-cell.tsv \
+        --umap_tsv ${feature}.expression.umap.tsv \
+        --enable_filtering \
+        --min_features $params.matrix_min_genes \
         --min_cells $params.matrix_min_cells \
         --max_mito $params.matrix_max_mito \
-        --mito_prefix ${params.mito_prefix} \
+        --mito_prefixes $mito_prefixes \
         --norm_count $params.matrix_norm_count \
-        --gene_counts gene_matrix_counts.tsv \
-        --sample_id ${meta.alias} \
-        --transcript_counts transcript_matrix_counts.tsv
+        --enable_umap \
+        --replicates 3 
     """
 }
 
 
-process umap_reduce_expression_matrix {
-    label "singlecell"
-    cpus 1
-    // Most runs will use less than 10GB memory, but large numbers of cells (above 15K)
-    // nan lead to memory usage over 20GB. Max here is 32GB 
-    memory { 8.GB * task.attempt }
-    maxRetries 4
-    errorStrategy {task.exitStatus in [137,140] ? 'retry' : 'terminate'}
-    input:
-        tuple val(repeat_num),
-              val(meta),
-              val(data_type),
-              path(matrix)
-    output:
-        tuple val(meta),
-                path("${data_type}_umap_${repeat_num}.tsv"),
-                emit: matrix_umap_tsv
-    """
-    workflow-glue umap_reduce \
-        --output ${data_type}_umap_${repeat_num}.tsv \
-        ${matrix}
-    """
-}
-
+// Merge annotated GFFs and transcriptome sequence files
 process merge_transcriptome {
-    // Merge the annotated GFFs and transcriptome sequence files
     label "singlecell"
-    cpus 1
+    cpus 2
     memory "2GB"
+    publishDir "${params.out_dir}/${meta.alias}", mode: 'copy'
     input:
         tuple val(meta),
             path('fasta/?.fa'),
             path('gffs/?.gff')
     output:
         tuple val(meta),
-            path("${meta.alias}.transcriptome.gff.gz"),
-            path("${meta.alias}.transcriptome.fa.gz"),
+            path("transcriptome.gff.gz"),
+            path("transcriptome.fa.gz"),
             emit: merged_annotation
     """
-    # Concatenate transcriptome files, remove comments (from gff) and compress
-    find fasta/ -name '*.fa' -exec cat {} + | gzip > "${meta.alias}.transcriptome.fa.gz"
-    find gffs/ -name '*.gff' -exec cat {} + |grep -v '^#' | gzip > "${meta.alias}.transcriptome.gff.gz"
+    find fasta/ -name '*.fa' -exec cat {} + \
+        | bgzip --threads ${task.cpus} -c  \
+        > "transcriptome.fa.gz"
+    find gffs/ -name '*.gff' -exec cat {} + \
+        | grep -v '^#' \
+        | bgzip --threads ${task.cpus} -c  \
+        > "transcriptome.gff.gz"
+    """
+}
+
+
+process combine_final_tag_files {
+    // Create final per-sample read summaries with information from all stages
+    label "singlecell"
+    cpus 1
+    memory "1 GB"
+    publishDir "${params.out_dir}/${meta.alias}", mode: 'copy'
+    input:
+        tuple val(meta),
+              path("tags*.tsv")
+    output:
+        tuple val(meta),
+              path("read_tags.tsv")
+    """
+    awk 'FNR>1 || NR==1' *.tsv > "read_tags.tsv"
+    """
+}
+
+
+process umi_gene_saturation {
+    label "singlecell"
+    cpus 4
+    memory "32 GB"
+    input:
+        tuple val(meta),
+              path("read_tags.tsv")
+    output:
+        tuple val(meta),
+              path("saturation_curves.png"),
+              emit: saturation_curve
+    """
+    export POLARS_MAX_THREADS=$task.cpus
+
+    workflow-glue calc_saturation \
+        --output "saturation_curves.png" \
+        --read_tags read_tags.tsv
     """
 }
 
@@ -458,6 +365,7 @@ process merge_transcriptome {
 process pack_images {
     label "singlecell"
     cpus 1
+    memory "1 GB"
     input:
         tuple val(meta),
               path("images_${meta.alias}/*")
@@ -470,157 +378,150 @@ process pack_images {
 }
 
 
+process tag_bam {
+    label "singlecell"
+    cpus 4
+    memory "16 GB"
+    publishDir "${params.out_dir}/${meta.alias}", mode: 'copy'
+    input:
+        tuple val(meta), path('align.bam'), path('align.bam.bai'), path('tags/tag_*.tsv')
+    output:
+         tuple val(meta), path("tagged.bam"), path('tagged.bam.bai')
+    script:
+    """
+    workflow-glue tag_bam \
+        align.bam tagged.bam tags \
+        --threads ${task.cpus}
+    samtools index -@ ${task.cpus} "tagged.bam"
+    """
+}
+
+
 workflow process_bams {
     take:
         bam
         extracted_barcodes
+        high_qual_bc_counts
         gtf
-        bc_longlist_dir
         ref_genome_fasta
         ref_genome_idx
     main:
+        // Split the GTF by chromosome
         chr_gtf = split_gtf_by_chroms(gtf)
             .flatten()
-            .map {file -> 
-                // create [chr, gtf]
-                tuple(file.baseName, file)}
+            .map {fname -> tuple(fname.baseName, fname)}  // [chr, gtf]
 
-        get_contigs(bam)
+        generate_whitelist(high_qual_bc_counts)
 
-        contigs = get_contigs.out.contigs
-            .splitCsv().map{it -> [it[0][0], it[1]]}
-
-        // Keep only the contigs that are referenced in the gtf
-        contigs = chr_gtf
-            .cross(contigs) // -> [[ chr, chr.gtf], [chr, meta]]
-            // [meta, chr, chr.gtf]
-            .map {chr_gtf, chr_meta -> [chr_meta[1], chr_meta[0], chr_gtf[1]]}
-
-        generate_whitelist(
-            extracted_barcodes.groupTuple(),
-            bc_longlist_dir)
-
+        // TODO: this process really has no business being here. It should be
+        //       moved into main.nf as an aggregation across all the chunks
+        //       in extracted_barcodes. It takes a long time per-chunk so should
+        //       be left as parallel across chunks.
         assign_barcodes(
-             generate_whitelist.out.whitelist
+            generate_whitelist.out.whitelist
             .cross(extracted_barcodes)
             .map {it ->
-                    meta = it[0][0]
-                    whitelist = it[0][1]
-                    barcodes = it[1][1]
-                    [meta, whitelist, barcodes]
-                })
+                meta = it[0][0]
+                whitelist = it[0][1]
+                barcodes = it[1][1]
+                [meta, whitelist, barcodes]})
 
-        // Combine the BAM and tags chunks
-        combine_bams_and_tags(
-            bam.groupTuple()
-                .join(assign_barcodes.out.tags.groupTuple()))
-
-        // Split the tags by chromosome
-        chr_tags = combine_bams_and_tags.out.merged_tags
+        // Combine the tag chunks to per chrom chunks and emit [meta, chr, tags]
+        chr_tags = cat_tags_by_chrom(assign_barcodes.out.tags.groupTuple())
             .transpose()
             .map {meta, file -> [meta, file.baseName, file]}
 
+        // Combine the BAM chunks per-sample
+        merge_bams(bam.groupTuple())
+
+        // Run stringtie per-chrom.
+        // Note: this passes in the whole genome BAM but the
+        //       .combine() runs this per-chrom such that we get
+        //       out reads as fastq per-chrom
         stringtie(
             ref_genome_fasta,
             ref_genome_idx,
-            combine_bams_and_tags.out.merged_bam
+            merge_bams.out.merged_bam
                 .combine(chr_gtf))
 
+        // TODO: We're likely to change this to use bambu and avoid using
+        //       stringtie altogether. However note that the next three steps
+        //       are a strict linear pipeline and should be combined into one
+        //       process to avoid staging of files between processes. Note further
+        //       that it would be trivial to combine the assign_features and
+        //       and create_matrix steps into a single program to avoid writing
+        //       any intermediate files whatsoever.
         align_to_transcriptome(stringtie.out.read_tr_map)
 
         assign_features(
             align_to_transcriptome.out.read_tr_map
-            .join(chr_tags, by: [0, 1]))
+                .join(chr_tags, by: [0, 1]))
 
-        cluster_umis(
+        create_matrix(
             assign_features.out.feature_assigns
-            // Join on [sample meta,chr]
-            .join(chr_tags, by: [0, 1]))
+                // Join on [sample meta, chr]
+                .join(chr_tags, by: [0, 1]))
 
-        tag_bams(bam
-             // cross by sample_id on the output of cluster_umis to return
-             // [sample_id, chr, kit_name, bam, bai, tags.tsv]
-            .cross(cluster_umis.out.read_tags)
-            .map {it -> it.flatten()[0, 1, 2, 4, 5 ]})
+        // aggregate per-chrom expression matrices to create MEX and UMAP TSVs
+        process_matrix(
+            create_matrix.out.gene.groupTuple(by: [0, 2])
+            .mix(
+                create_matrix.out.transcript.groupTuple(by: [0, 2]))
+            .map {meta, chroms, feature, hdfs -> [meta, feature, hdfs]})
 
-        read_tags = combine_tag_files(
-            cluster_umis.out.read_tags
-             .map {it -> it[0, 2]}.groupTuple())
+        // TODO: merging the gffs and merging the fasta files is two independent
+        //       tasks, they can be done in parallel in two distinct processes.
+        merge_transcriptome(
+            assign_features.out.annotation.groupTuple()
+                .join(stringtie.out.read_tr_map.groupTuple())
+                .map{
+                    meta, ann_tr_gff, chr, tr_fa, ref_gtf, str_gff, fastq ->
+                    [meta, tr_fa, ann_tr_gff]})
 
-       final_read_tags = combine_final_tag_files(
-            cluster_umis.out.final_read_tags.groupTuple())
-
-        umi_gene_saturation(read_tags)
-
-        construct_expression_matrix(read_tags)
-
-        process_expression_matrix(
-            construct_expression_matrix.out.matrix_counts_tsv)
-
-        if (params.plot_umaps == true) {
-            umap_reduce_expression_matrix(
-                Channel.from(1..params.umap_n_repeats)
-                .combine(
-                    process_expression_matrix.out.gene_matrix_processed_tsv
-                    .concat(
-                        process_expression_matrix.out.transcript_matrix_processed_tsv)))
-             umaps = umap_reduce_expression_matrix.out.matrix_umap_tsv.groupTuple()
-        }else{
-            umaps = process_expression_matrix.out.gene_matrix_processed_tsv
-                // Make optinal file for each sample - [sample_id, OPTIONAL_FILE]
-                .map {[it[0], file("$projectDir/data/OPTIONAL_FILE")]}
-        }
-
-        if (params.merge_bam) {
-            combine_chrom_bams(tag_bams.out.tagged_bam
-                .groupTuple())
-            // [sample_id, bam]
-            tagged_bams = combine_chrom_bams.out.bam_fully_tagged
-        }else{
-            tagged_bams = tag_bams.out.tagged_bam
-            // [sample_id, bam, bai]
-            .map {it -> it[0, 1, 2]}
+        // construct per-read summary tables for end user
+        // and a tagged bam -- we don't pass final_read_tags here since its
+        // advantageous for memory reasons to be able to read the per-chrom
+        // tables when iterating over the BAM
+        tags_by_sample = create_matrix.out.summary
             .groupTuple()
-        }
+            .map{meta, chrs, files -> [meta, files]}
+        final_read_tags = combine_final_tag_files(tags_by_sample)
+        tag_bam(merge_bams.out.join(tags_by_sample))
 
-    pack_images(
-        generate_whitelist.out.kneeplot
-       .concat(umi_gene_saturation.out.saturation_curve)
-       .groupTuple())
+        // UMI saturation curves
+        // TODO: this save figures with matplotlib -- just output
+        //       data and plot in report with bokeh
+        umi_gene_saturation(final_read_tags)
 
-    merge_transcriptome(
-        assign_features.out.annotation.groupTuple()
-            .join(stringtie.out.read_tr_map.groupTuple())
-            .map{
-                meta, ann_tr_gff, chr, tr_fa, ref_gtf, str_gff, fastq  ->
-                [meta, tr_fa, ann_tr_gff]})
-
-    // Tidy up channels prior to output
-    proc_expresion_out = process_expression_matrix.out.gene_matrix_processed_tsv
-        .concat(process_expression_matrix.out.transcript_matrix_processed_tsv)
-        .map {it -> it[0, 2]}.groupTuple()
-
+        // TODO: see above:
+        //       i) we shouldn't be making ugly static images
+        //       ii) this process simply stages images under a common folder
+        //           that could just be done in output directly
+        pack_images(
+            generate_whitelist.out.kneeplot
+                .concat(umi_gene_saturation.out.saturation_curve)
+                .groupTuple())
+    
     emit:
-        results = umaps
-            .join(umi_gene_saturation.out.saturation_curve)
-            .join(final_read_tags)
-            .join(construct_expression_matrix.out)
-            .join(proc_expresion_out)
-            .join(process_expression_matrix.out.mito_expression_tsv)
-            .join(generate_whitelist.out.whitelist)
-            .join(generate_whitelist.out.uncorrected_bc_counts)
-            .join(generate_whitelist.out.kneeplot)
-            .join(tagged_bams)
-            .join(pack_images.out)
-            .join(merge_transcriptome.out)
-            .map{it -> it.flatten()}
 
         // Emit sperately for use in the report
+        // TODO: it shouldn't be the concern of this process what goes in the report
+        //       instead just collate everything possible per sample
         final_read_tags = final_read_tags
         plots = pack_images.out.collect{it -> it[1]}.collect()
         white_list = generate_whitelist.out.whitelist
-        gene_expression = process_expression_matrix.out.gene_matrix_processed_tsv.map {it -> it[0, 2]}
-        transcript_expression = process_expression_matrix.out.transcript_matrix_processed_tsv.map {it -> it[0, 2]}
-        mitochondrial_expression = process_expression_matrix.out.mito_expression_tsv
-        umap_matrices = umaps
-}
+        gene_mean_expression = process_matrix.out.meancell
+            .filter{it[1] == "gene"}
+            .map{it->[it[0], it[2]]}
+        transcript_mean_expression = process_matrix.out.meancell
+            .filter{it[1] == "transcript"}
+            .map{it->[it[0], it[2]]}
+        mitochondrial_expression = process_matrix.out.mitocell
+            .filter{it[1] == "gene"}
+            .map{it->[it[0], it[2]]}
+        umap_matrices = process_matrix.out.umap
+            .map{it->[it[0], it[2]]}
+            .groupTuple(size:2)
+            .map{key, files -> [key, files.flatten()]}
+        // per chromosome expression statistics
+        expression_stats = create_matrix.out.stats}
