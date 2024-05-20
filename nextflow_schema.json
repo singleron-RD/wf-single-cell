@@ -29,12 +29,6 @@
                     "description": "The path to the 10x reference directory",
                     "help_text": "Human reference data can be downloaded from 10x [here](https://cf.10xgenomics.com/supp/cell-exp/refdata-gex-GRCh38-2020-A.tar.gz). Instructions for preparing reference data can be found [here](https://www.10xgenomics.com/support/software/cell-ranger/tutorials/cr-tutorial-mr#overview)"
                 },
-                "merge_bam": {
-                    "type": "boolean",
-                    "title": "Merge output BAM files",
-                    "description": "Merge BAM alignment files into a single BAM file per sample",
-                    "help_text": "Merging of BAM files can take a significant amount of time and uses additional disk space.  By default BAM files are output per chromosome. Set to true if a BAM file per sample is needed for downstream analyses."
-                },
                 "kit_name": {
                     "type": "string",
                     "title": "Kit",
@@ -112,12 +106,6 @@
                     "default": "output",
                     "format": "directory-path",
                     "description": "Directory for output of all workflow results."
-                },
-                "plot_umaps": {
-                    "type": "boolean",
-                    "title": "Plot UMAPs",
-                    "description": "Optionally generate UMAP plots.",
-                    "help_text": "If set to false (the default), UMAP projection and plotting will be skipped, which will speed up the workflow."
                 }
             }
         },
@@ -135,12 +123,19 @@
                     "description": "A file defining the configurations associated with the various supported 10x kits.",
                     "help_text": "A CSV file is expected with the following headers [kit_name, kit_version, barcode_length, umi_length]. If not specified, a default `kit_configs.csv` (found in the project directory root) will be used. This parameter does not typically need be changed."
                 },
-                "max_threads": {
+                "threads": {
                     "type": "integer",
                     "title": "Maximum number of threads",
-                    "description": "This is used to control how many threads the following multithread-capable processes can use: combine_chrom_bams(max 8 threads), stringtie(max_threads/4), align_to_transcriptome(max_threads/2). It is also used as the number of parts to chunk the FASTQ data into before processing.",
+                    "description": "Number of CPU threads to use in resource intensive processes.",
                     "help_text": "The total CPU resource used by the workflow is constrained by the executor configuration.",
-                    "default": 4
+                    "default": 8
+                },
+                "fastq_chunk": {
+                    "type": "integer",
+                    "title": "Fastq chunk size",
+                    "description": "Sets the maximum number of reads per chunk for the initial processing of reads.",
+                    "default": 1000000,
+                    "help_text": "Controls batching of reads for processing."
                 },
                 "barcode_adapter1_suff_length": {
                     "type": "integer",
@@ -205,34 +200,6 @@
                     "format": "path",
                     "title": "UMAP gene list",
                     "description": "File containing a list of gene symbols (one symbol per line) to annotate with expression values in the UMAP projections."
-                },
-                "resources_mm2_max_threads": {
-                    "type": "integer",
-                    "title": "Minimap2 threads",
-                    "description": "Maximum allowed threads for the minimap2 stage.",
-                    "help_text": "The total CPU resource used by the workflow is constrained by the executor configuration.",
-                    "default": 4
-                },
-                "resources_mm2_flags": {
-                    "type": "string",
-                    "title": "Minimap2 flags",
-                    "description": "Optional flags for the minimap2 stage.",
-                    "default": "-I 7G",
-                    "help_text": "Minimap2 options can be supplied to modify the alignment parameters: eg '-I 4G' loads at max 4G bases into memory for indexing."
-                },
-                "adapter_scan_chunk_size": {
-                    "type": "integer",
-                    "title": "Adapter scanning chunk size",
-                    "description": "Chunk size for adapter scanning step.",
-                    "default": 0,
-                    "help_text": "Set the number of reads per chunk to process in the adapter_scan stage. If set to 0 (the default), the input reads will be split into one chunk per threads provided with `max_threads`."
-                },
-                "process_chunk_size": {
-                    "type": "integer",
-                    "title": "Process chunk size",
-                    "description": "Control the size of chunks for processing of data.",
-                    "default": 100000,
-                    "help_text": "Several steps process the data into chunks of n reads/alignments. Use a smaller number to reduce peak memory use."
                 },
                 "mito_prefix": {
                     "type": "string",
@@ -330,9 +297,9 @@
         },
         "minimum": {
             "cpus": 8,
-            "memory": "16GB"
+            "memory": "32GB"
         },
-        "run_time": "48h for 120M reads",
-        "arm_support": true
+        "run_time": "Approximately 8h for 120M reads with the recommended requirements.",
+        "arm_support": false
     }
 }

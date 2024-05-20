@@ -1,12 +1,12 @@
-#!/usr/bin/env python
 """Make report."""
 import base64
+import json
 from pathlib import Path
 
 from dominate.tags import b, figure, h6, img, li, p, ul
 import ezcharts
+from ezcharts.components import fastcat
 from ezcharts.components.ezchart import EZChart
-from ezcharts.components.fastcat import SeqSummary
 from ezcharts.components.reports.labs import LabsReport
 from ezcharts.components.theme import LAB_head_resources
 from ezcharts.layout.snippets import DataTable, Grid, Tabs
@@ -71,8 +71,8 @@ def umap_plots(umaps_dirs, genes_file):
 
             repl_tabs = Tabs()
 
-            gene_umap_files = sample_dir.glob('*gene_umap*')
-            transcript_umap_files = sample_dir.glob('*transcript_umap*')
+            gene_umap_files = sample_dir.glob('gene.expression.umap*.tsv')
+            transcript_umap_files = sample_dir.glob('transcript.expression.umap*.tsv')
 
             for i, (
                 gene_umap_file, transcript_umap_file
@@ -81,22 +81,21 @@ def umap_plots(umaps_dirs, genes_file):
                 with repl_tabs.add_tab(f'umap #{i}'):
 
                     gene_umap = pd.read_csv(gene_umap_file, sep='\t', index_col=0)
-                    gene_expression_file = sample_dir / 'gene_expression'
-                    gene_expression = pd.read_csv(
-                        gene_expression_file, sep='\t', index_col=0)
-                    gene_mean_expression = pd.DataFrame(
-                        gene_expression.mean(axis=0), columns=['gene mean expression'])
+
+                    gene_mean_expression = pd.read_csv(
+                        sample_dir / 'gene_mean_expression.tsv',
+                        sep='\t', index_col=0,
+                       )
 
                     transcript_umap = pd.read_csv(
                         transcript_umap_file, sep='\t', index_col=0)
-                    transcript_expression_file = sample_dir / 'transcript_expression'
-                    transcript_expression = pd.read_csv(
-                        transcript_expression_file, sep='\t', index_col=0)
-                    transcript_mean_expression = pd.DataFrame(
-                        transcript_expression.mean(axis=0),
-                        columns=['transcript mean expression'])
 
-                    mito_expression_file = sample_dir / "mitochondrial_expression"
+                    transcript_mean_expression = pd.read_csv(
+                        sample_dir / 'transcript_mean_expression.tsv',
+                        sep='\t', index_col=0,
+                     )
+
+                    mito_expression_file = sample_dir / "mitochondrial_expression.tsv"
                     mito_expression = pd.read_csv(
                         mito_expression_file, sep='\t', index_col=0)
 
@@ -107,7 +106,7 @@ def umap_plots(umaps_dirs, genes_file):
                             gene_mean_expression, left_index=True, right_index=True)
                         _plot(
                             gdata, title='Gene UMAP / mean gene expression annotation',
-                            hue='gene mean expression')
+                            hue='mean_expression')
 
                         tdata = transcript_umap.merge(
                             transcript_mean_expression, left_index=True,
@@ -116,7 +115,7 @@ def umap_plots(umaps_dirs, genes_file):
                             tdata,
                             title='Transcript UMAP / '
                                   'mean transcript expression annotation',
-                            hue='transcript mean expression')
+                            hue='mean_expression')
 
                         mdata = gene_umap.merge(
                             mito_expression, left_index=True, right_index=True)
@@ -125,11 +124,11 @@ def umap_plots(umaps_dirs, genes_file):
                             title='Gene UMAP / mean mito. expression '
                                   'annotation', hue='mito_pct')
 
-                        # Plot expresion levels from a single gene over gene UMAP.
+                        # Plot expression levels from a single gene over gene UMAP.
                         for gene in genes:
-                            if gene in gene_expression.index:
+                            if gene in gene_mean_expression.index:
                                 go_data = gene_umap.merge(
-                                    gene_expression.loc[gene],
+                                    gene_mean_expression.loc[gene],
                                     left_index=True, right_index=True)
                                 _plot(
                                     go_data,
@@ -164,19 +163,31 @@ def diagnostic_plots(img_dirs):
 def main(args):
     """wf-single-cell report generation."""
     logger = get_named_logger("Report")
-
     logger.info('Building report')
 
-    # Create report
     report = LabsReport(
-        REPORT_TITLE, WORKFLOW_NAME, args.params, args.versions,
+        'Workflow Single Cell report', 'wf-single-cell',
+        args.params, args.versions, args.wf_version,
         head_resources=[*LAB_head_resources])
 
-    with report.add_section('Read summaries', 'Read summary'):
-        SeqSummary(args.read_stats_dir)
+    with open(args.metadata) as metadata:
+        sample_details = [{
+            'sample': d['alias'],
+            'type': d['type'],
+            'barcode': d['barcode']
+        } for d in json.load(metadata)]
 
-    survival_df = pd.read_csv(args.survival, sep='\t', index_col=0)
-    wf_summ_df = pd.read_csv(args.wf_summary, sep='\t', index_col=0)
+    with report.add_section('Read summary', 'Read summary'):
+        names = tuple(d['sample'] for d in sample_details)
+        stats = tuple(args.stats)
+        if len(stats) == 1:
+            stats = stats[0]
+            names = names[0]
+        fastcat.SeqSummary(stats, sample_names=names)
+
+    # set statistic as index column to allow for easy selection in building table.
+    # For barplots we'll pull it back into a column
+    survival_df = pd.read_csv(args.survival, sep='\t').set_index("statistic")
 
     with report.add_section('Single cell sample summary', 'sc-seq summary'):
         p(
@@ -185,18 +196,16 @@ def main(args):
              each sample."""
         )
         table = DataTable(
-            headers=['sample ID',
-                     'reads',
-                     'cells',
-                     'genes',
-                     'transcripts',
-                     ])
-        for row in wf_summ_df.itertuples():
+            headers=[
+                'sample ID', 'reads', 'cells', 'genes', 'transcripts'])
+        for name, grp in survival_df.groupby('sample_id'):
             table.add_row(
-                title=row.sample_id,
+                title=name,
                 columns=[
-                    row.n_reads, row.total_cells, row.total_genes,
-                    row.total_transcripts])
+                    grp.loc['reads', 'count'],
+                    grp.loc['cells', 'count'],
+                    grp.loc['genes', 'count'],
+                    grp.loc['transcripts', 'count']])
 
     with report.add_section('Read survival by stage', 'Attrition'):
         p(
@@ -214,19 +223,17 @@ def main(args):
             transcript.""")
         )
 
+        # pull statistic column into column, rename, and build barplot
         x_name = 'Workflow stage'
         y_name = 'Proportion of reads [%]'
-
         order = [
-            'full_length', 'total_tagged', 'gene_tagged',
-            'transcript_tagged']
-        data = survival_df.rename(
-            columns={'class': x_name})
+            'full_length', 'tagged', 'gene_tagged', 'transcript_tagged']
+        data = survival_df.reset_index(names=x_name)
         data = data[data[x_name].isin(order)]
 
         EZChart(
             ezcharts.barplot(
-                data=data, x=x_name, y=y_name, hue='sample', order=order),
+                data=data, x=x_name, y=y_name, hue='sample_id', order=order),
             theme='epi2melabs')
 
     with report.add_section('Primer configuration', 'Primers'):
@@ -265,22 +272,20 @@ def main(args):
             li("Adapter2: Non-Poly(dT) RT primer")
         )
 
+        # pull statistic column into column, rename and build barplot
         order = [
             'full_length',
-            'double_adapter2',
-            'single_adapter2',
-            'single_adapter1',
-            'double_adapter1',
-            'no_adapters',
-            'other']
+            'single_adapter1', 'double_adapter1',
+            'single_adapter2', 'double_adapter2',
+            'no_adapters', 'other']
         x_name = 'Primer configuration'
         y_name = 'Proportion of reads [%]'
-        data = survival_df.rename(columns={'class': x_name})
+        data = survival_df.reset_index(names=x_name)
         data = data[data[x_name].isin(order)]
 
         EZChart(
             ezcharts.barplot(
-                data=data, x=x_name, y=y_name, hue='sample', order=order),
+                data=data, x=x_name, y=y_name, hue='sample_id', order=order),
             theme='epi2melabs')
 
     with report.add_section('Diagnostic plots', 'Diagnostic plots'):
@@ -341,18 +346,17 @@ def main(args):
     else:
         logger.info('Skipping UMAP plotting')
 
-    report.write(args.output)
+    report.write(args.report)
     logger.info('Report writing finished')
 
 
 def argparser():
     """Argument parser for entrypoint."""
     parser = wf_parser("report")
-
+    parser.add_argument("report", help="Report output file")
     parser.add_argument(
-        "--read_stats_dir",
-        "--read_stats",
-        help="fastcat read stats file or folder of files", type=Path)
+        "--stats", nargs='+',
+        help="Fastcat per-read stats, ordered as per entries in --metadata.")
     parser.add_argument(
         "--images", nargs='+',
         help="Sample directories containing various images to put in report")
@@ -360,25 +364,18 @@ def argparser():
         "--survival",
         help="Read survival data in TSV format")
     parser.add_argument(
-        "--wf_summary",
-        help="Workflow summary statistics")
-    parser.add_argument(
         "--params", help="Workflow params json file")
     parser.add_argument(
         "--versions", help="Workflow versions file")
     parser.add_argument(
-        "--output", help="Output HTML file")
-    parser.add_argument(
         "--umap_dirs", nargs='+',
         help="Sample directories containing umap and gene expression files")
     parser.add_argument(
-        "--gene_expression", help="Paths to UMAP TSVs",
-        nargs='+')
-    parser.add_argument(
         "--umap_genes", help="File containing list of genes to annnotate UMAPs")
+    parser.add_argument(
+        "--metadata", default='metadata.json', required=True,
+        help="sample metadata")
+    parser.add_argument(
+        "--wf_version", default='unknown',
+        help="version of the executed workflow")
     return parser
-
-
-if __name__ == "__main__":
-    args = argparser().parse_args()
-    main(args)

@@ -1,15 +1,13 @@
 """Test adapter_scan_vsearch."""
 from pathlib import Path
-import sys
 import tempfile
 
 import pysam
 import pytest
 from pytest import fixture
 from workflow_glue.adapter_scan_vsearch import (
-    call_vsearch, complement_trans,
-    parse_vsearch, write_adapters_fasta,
-    write_stranded_fastq)
+    call_vsearch, complement_trans, create_stranded_reads,
+    parse_vsearch, write_adapters_fasta)
 from workflow_glue.sc_util import kit_adapters
 
 
@@ -26,20 +24,14 @@ def segment():
     [
         # Non-full length reads
         [[], [['*', 'no_adapters', '*']]],
-
         [['adapter1_f'], [['adapter1_f', 'single_adapter1', '+']]],
-
         [['adapter2_r'], [['adapter2_r', 'single_adapter2', '-']]],
-
         [['adapter2_r', 'adapter1_f'], [['adapter2_r-adapter1_f', 'other', '*']]],
-
         # Full length reds
         [['adapter1_f', 'adapter2_f'], [['adapter1_f-adapter2_f', 'full_len', '+']]],
-
         # 3 adapters with one full length segment
         [['adapter2_r', 'adapter1_r', 'adapter1_f'],
          [['adapter2_r-adapter1_r', 'full_len', '-']]],
-
         # Mutiple subreads in a read
         [['adapter1_f', 'adapter2_f', 'adapter2_r', 'adapter1_r'],
             [
@@ -49,19 +41,14 @@ def segment():
     ]
 )
 def test_call_vsearch(adapters, expected_results, segment):
-    """
-    Test call_vsearch running and parsing.
+    """Test call_vsearch running and parsing.
 
     This is the main function of the script that calls a bunch of other functions.
     """
     id_ = 'read_1'
-
     kits = ['3prime', '5prime', 'multiome']
 
     for kit in kits:
-        sys.stdout.write(f'\n--- Testing: {kit} ---\n')
-
-        sys.stdout.write(f'Testing case: {adapters}\n')
         # Build the read
         adapter_seqs = []
         for a in adapters:
@@ -89,14 +76,16 @@ def test_call_vsearch(adapters, expected_results, segment):
             kit_adapters[kit]['adapter1'], kit_adapters[kit]['adapter2'],
             adapter_fasta)
 
-        vsearch_results = call_vsearch(Path(fastq_file.name), 0.7, adapter_fasta)
-        parsed_results = parse_vsearch(vsearch_results)
+        vsearch_results = tempfile.NamedTemporaryFile(suffix='.fq')
+        call_vsearch(
+            Path(fastq_file.name), Path(vsearch_results.name), 0.7, adapter_fasta, 4)
+        parsed_results = parse_vsearch(vsearch_results.name)
 
         # Each result can contain 0 or more subreads -
         #  segments with consecutive pairs of compatible adapters.
-        for i, exp_result in enumerate(expected_results):
-            subread_id = f'{id_}_{i}'
-            subread_result = parsed_results[id_][subread_id]
+        parsed_results = iter(parsed_results[id_])
+        for exp_result in expected_results:
+            subread_result = next(parsed_results)
 
             assert subread_result['adapter_config'] == exp_result[0]
             assert subread_result['lab'] == exp_result[1]
@@ -115,11 +104,10 @@ def test_write_stranded_fastq():
         "+\n"
         f"{'<' * len(seq)}")
 
-    # The config defines the location and orientation of the subreads within the read
     # This config defines one read containing two subreads.
     config = {
-        'read_1': {
-            'read_1_0': {
+        'read_1': [
+            {
                 'readlen': 100, 'read_id': 'read_1_0', 'start': 10,
                 'end': 110,
                 'fl': True, 'stranded': True, 'orig_strand': '+',
@@ -127,7 +115,7 @@ def test_write_stranded_fastq():
                     'adapter1_f-adapter2_f-adapter2_r-adapter1_r',
                 'adapter_config': 'adapter1_f-adapter2_f',
                 'lab': 'full_len'},
-            'read_1_1': {
+            {
                 'readlen': 200, 'read_id': 'read_1_1', 'start': 120,
                 'end': 320,
                 'fl': True, 'stranded': True, 'orig_strand': '-',
@@ -135,17 +123,20 @@ def test_write_stranded_fastq():
                     'adapter1_f-adapter2_f-adapter2_r-adapter1_r',
                 'adapter_config': 'adapter1_f-adapter2_f',
                 'lab': 'full_len'}
-        }
+            ]
     }
 
     temp_fq = tempfile.NamedTemporaryFile(suffix='.fq')
 
-    temp_fq_out = tempfile.NamedTemporaryFile(suffix='.fq.gz')
+    temp_fq_out = tempfile.NamedTemporaryFile(mode='wt', suffix='.fq')
 
     with open(temp_fq.name, 'w') as fh:
         fh.write(fastq)
 
-    write_stranded_fastq(temp_fq.name, config, temp_fq_out.name, '3prime', fl_only=True)
+    data = create_stranded_reads(temp_fq.name, config, '3prime', fl_only=True)
+    for read in data:
+        temp_fq_out.write(read)
+    temp_fq_out.flush()
 
     results = []
     with pysam.FastxFile(temp_fq_out.name) as fh_res:

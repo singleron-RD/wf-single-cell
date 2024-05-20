@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.0.0]
+### Fixed
+- Reported cell count off by -1 in report summary table.
+- Issue with TSV concat/splitting during `combine_bam_and_tags` stage.
+- Issue introduced in v1.1.0 that caused a partial BAM file to be output.
+- Corrected example command in README.
+- Incorrect reporting of unique gene and transcripts in report table.
+- Processed expression matrix entries incorrectly filtered.
+- Gene identity of multimapping reads could be incorrectly assigned.
+### Changed
+- Read chunking done in library code.
+- `--process_chunk_size` parameter changed to `--fastq_chunk`
+- Resource declarations in Nextflow processes.
+- Simplified read batching and decoupled from CPU usage parameters.
+- Expression matrix construction code reworked to reduce memory usage.
+- Adapter search step now 3x faster.
+- Barcode assignment 3x faster.
+- Feature assignment now 15x faster.
+- UMI clustering 20x faster.
+- UMAP creation memory use reduced 6-fold and up-to 30x faster (and
+  always enabled).
+- Final read tagging step is 3x faster.
+- Combined various preprocessing steps into a single process to avoid
+  unnecessary file writes.
+- Updated stringtie2 to v2.2.2.
+- Pre-calculate report summary data to reduce disk-space and IO overheads.
+- Single BAM per-sample is now always produced (option `--merge_bam` is removed).
+### Removed
+- Several workflow parameters as part of resource management simplification.
+- `--plot_umaps` option, as UMAP generation has been made much more efficient
+  and is always enabled.
+- `--merge_bam` option.
+
 ## [v1.1.0]
 ### Added
 - `full_length_only` parameter to process only full length reads (default: true).

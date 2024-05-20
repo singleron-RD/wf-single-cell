@@ -1,191 +1,168 @@
-#!/usr/bin/env python
-"""Process matrix."""
+"""Expression counts matrix construction."""
+import argparse
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
+from sklearn.decomposition import PCA
+import umap
 
+from .expression_matrix import ExpressionMatrix  # noqa: ABS101
 from .util import get_named_logger, wf_parser  # noqa: ABS101
 
 
 def argparser():
     """Create argument parser."""
-    parser = wf_parser("process_matrix")
+    parser = wf_parser("exp_mat")
 
     parser.add_argument(
-        "--gene_counts",
-        help="Matrix of read counts per gene (row) \
-        per cell (column)"
-    )
-
+        "input", type=Path, nargs='+',
+        help="TSV with read tag data or batched expression matrices in HDF.")
     parser.add_argument(
-        "--transcript_counts",
-        help="Matrix of read counts per transcript (row) \
-        per cell (column)"
-    )
-
-    # Optional arguments
+        "--feature", default="gene", choices=["gene", "transcript"],
+        help="Feature to compute matrix. Only used when read tag input is given.")
     parser.add_argument(
-        "--min_genes",
-        help="Filter out cells that contain fewer than \
-        <min_genes> genes [100]",
-        type=int,
-        default=100,
-    )
-
+        "--raw", default="raw_feature_bc_matrix",
+        help="Output folder for raw counts MEX data.")
     parser.add_argument(
-        "--min_cells",
-        help="Filter out genes that are observed in fewer than <min_cells> \
-        cells [3]",
-        type=int,
-        default=3,
-    )
-
+        "--processed", default="processed_feature_bc_matrix",
+        help="Output folder for processed counts MEX data.")
     parser.add_argument(
-        "--max_mito",
-        help="Filter out cells where more than <max_mito> percent of counts \
-        belong to mitochondrial genes [5]",
-        type=int,
-        default=5,
-    )
-
+        "--per_cell_expr", default="expression.mean-per-cell.tsv", type=Path,
+        help="Output TSV for per-cell mean expression level.")
     parser.add_argument(
-        "--mito_prefix",
-        help="prefix(s) to identify mitochondrial genes. Multiple can be \
-            supplied as comma-sperated prefixes",
-        default="MT-",
-    )
-
+        "--per_cell_mito", default="expression.mito-per-cell.tsv", type=Path,
+        help="Output TSV for per-cell mean expression level.")
     parser.add_argument(
-        "--sample_id",
-        help="prefix for output file name"
-    )
+        "--text", action="store_true", help=argparse.SUPPRESS)
 
-    parser.add_argument(
-        "--norm_count",
-        help="Normalize to this number of counts per cell [10000]",
-        type=int,
-        default=10000,
-    )
+    grp = parser.add_argument_group("Filtering")
+    grp.add_argument(
+        "--enable_filtering", action="store_true",
+        help="Enable filtering of matrix.")
+    grp.add_argument(
+        "--min_features", type=int, default=100,
+        help="Filter out cells that contain fewer features than this.")
+    grp.add_argument(
+        "--min_cells", type=int, default=3,
+        help="Filter out features that are observed in fewer than this "
+             "number of cells")
+    grp.add_argument(
+        "--max_mito", type=int, default=5,
+        help="Filter out cells where more than this percentage of counts "
+             "belong to mitochondrial features.")
+    grp.add_argument(
+        "--mito_prefixes", default=["MT-"], nargs='*',
+        help="prefixes to identify mitochondrial features.")
+    grp.add_argument(
+        "--norm_count", type=int, default=10000,
+        help="Normalize to this number of counts per cell as "
+             "is performed in CellRanger.")
+    grp.add_argument(
+        "--filtered_mex", default="filtered_feature_bc_matrix",
+        help="Output folder for raw counts MEX data.")
+
+    grp = parser.add_argument_group("UMAP creation")
+    grp.add_argument(
+        "--enable_umap", action="store_true",
+        help="Perform UMAP on matrix.")
+    grp.add_argument(
+        "--umap_tsv", default="expression.umap.tsv", type=Path,
+        help=(
+            "UMAP TSV output file path. If --replicates is greater than 1 "
+            "files will be named: name.index.tsv."))
+    grp.add_argument(
+        "--replicates", type=int, default=1,
+        help="Number of UMAP replicated to perform.")
+    grp.add_argument(
+        "--pcn", type=int, default=100,
+        help="Number of principal components to generate prior to UMAP")
+    grp.add_argument(
+        "--dimensions", type=int, default=2,
+        help="Number of dimensions in UMAP embedding")
+    grp.add_argument(
+        "--min_dist", type=float, default=0.1,
+        help="Minimum distance parameter of UMAP")
+    grp.add_argument(
+        "--n_neighbors", type=int, default=15,
+        help="Number of neighbors parameter of UMAP")
 
     return parser
 
 
-def filter_cells(df_gene, df_tr, args):
-    """Remove cells that express fewer than N=<args.min_genes> \
-        unique genes."""
-    logger = get_named_logger('ProcMatrix')
-    df_gene = df_gene.transpose()
-    df_tr = df_tr.transpose()
-    df_gene["total"] = df_gene.sum(axis=1)
-    df_tr["total"] = df_tr.sum(axis=1)
-
-    # Remove cells that have fewer than <args.min_genes> unique genes
-    df_gene["n_genes"] = df_gene.astype(bool).sum(axis=1)
-    n_dropped = df_gene[df_gene["n_genes"] < args.min_genes].shape[0]
-    logger.info(f"Dropping {n_dropped} cells with < {args.min_genes} genes")
-    df_gene = df_gene[df_gene["n_genes"] >= args.min_genes]
-    df_gene = df_gene.drop(["n_genes"], axis=1)
-
-    # Filter out cells where mitochondrial genes comprise more than
-    # <args.max_mito> percentage of the total count
-    mito_prefixes = args.mito_prefix.strip().split(',')
-    mito_genes = []
-    for gene in df_gene.columns:
-        for mpre in mito_prefixes:
-            if gene.find(mpre) == 0:
-                mito_genes.append(gene)
-
-    df_gene["mito_total"] = df_gene.loc[:, mito_genes].sum(axis=1)
-    df_gene["mito_pct"] = 100 * df_gene["mito_total"] / df_gene["total"]
-    df_gene["mito_pct"].to_csv(f"{args.sample_id}.gene_expression.mito.tsv", sep="\t")
-    n_mito = df_gene[df_gene["mito_pct"] > args.max_mito].shape[0]
-    logger.info(
-        f"Dropping {n_mito} cells with > {args.max_mito}% mitochondrial reads")
-    df_gene = df_gene[df_gene["mito_pct"] <= args.max_mito]
-
-    df_gene = df_gene.drop(["mito_total", "mito_pct"], axis=1)
-    df_gene = df_gene.transpose()
-
-    if df_gene.shape[1] == 0:
-        raise Exception("All cells have been filtered out!")
-
-    # Apply same filtering to transcript matrix
-    # Todo filter mitochondrial transcripts
-    df_tr["n_transcripts"] = df_tr.astype(bool).sum(axis=1)
-    n_dropped = \
-        df_tr[df_tr["n_transcripts"] < args.min_genes].shape[0]
-    logger.info(f"Dropping {n_dropped} cells with < {args.min_genes} genes")
-    df_tr = df_tr[df_tr["n_transcripts"] >= args.min_genes]
-    df_tr = df_tr.drop(["n_transcripts"], axis=1)
-    df_tr = df_tr.transpose()
-
-    return df_gene, df_tr
-
-
-def filter_genes(df_gene,  args):
-    """Filter genes."""
-    logger = get_named_logger('ProcMatrix')
-    df_gene["n_cells"] = df_gene.astype(bool).sum(axis=1)
-
-    # Remove genes that are present in fewer than <args.min_cells> unique cells
-    n_dropped = df_gene[df_gene["n_cells"] < args.min_cells].shape[0]
-    logger.info(
-        f"Dropping {n_dropped} genes observed in < {args.min_cells} cells")
-    df_gene = df_gene[df_gene["n_cells"] >= args.min_cells]
-    df_gene = df_gene.drop(["n_cells"], axis=1)
-
-    if df_gene.shape[0] == 0:
-        raise Exception("All genes have been filtered out!")
-
-    return df_gene
-
-
-def normalize(df_gene, args):
-    """Normalize."""
-    logger = get_named_logger('ProcMatrix')
-    df_gene = df_gene.transpose()
-
-    # cell_count / cell_total = X / <args.norm_count>
-    logger.info(f"Normalizing counts to {args.norm_count} reads per cell")
-    genes = df_gene.columns != "total"
-    df_gene.loc[:, genes] = df_gene.loc[:, genes] * args.norm_count
-    df_gene.loc[:, genes] = df_gene.loc[:, genes].div(df_gene["total"], axis=0)
-    df_gene = df_gene.drop(["total"], axis=1)
-    df_gene = df_gene.transpose()
-
-    return df_gene
-
-
 def main(args):
-    """Run entry point."""
-    logger = get_named_logger('ProcMatrix')
-    df_gene = pd.read_csv(
-        args.gene_counts, sep="\t").set_index("gene")
-    df_transcript = pd.read_csv(
-        args.transcript_counts, sep="\t").set_index("transcript")
+    """Make feature x cell, UMI-deduplicated, counts matrix."""
+    logger = get_named_logger('AggreMatrix')
+    logger.info('Constructing count matrices')
 
-    df_gene, df_transcript = filter_cells(df_gene, df_transcript, args)
+    # converting to float on fly means we can save a copy when normalizing
+    try:
+        matrix = ExpressionMatrix.aggregate_tags(args.input, args.feature, dtype=float)
+    except UnicodeDecodeError:
+        matrix = ExpressionMatrix.aggregate_hdfs(args.input, dtype=float)
+    logger.info("Removing unknown features.")
+    matrix.remove_unknown()
 
-    df_gene = filter_genes(df_gene, args)
-    df_transcript = filter_genes(df_transcript, args)
+    logger.info("Writing raw counts to file.")
+    if args.text:
+        matrix.to_tsv(args.raw, args.feature)
+    else:
+        matrix.to_mex(args.raw, dtype=int)
 
-    df_gene = normalize(df_gene, args)
-    df_transcript = normalize(df_transcript, args)
+    if args.enable_filtering:
+        logger.info("Filtering, normalizing and log-transforming matrix.")
+        matrix = (
+            matrix
+            .remove_cells_and_features(args.min_features, args.min_cells)
+            .remove_skewed_cells(
+                args.max_mito / 100, args.mito_prefixes,
+                fname=args.per_cell_mito, label="mito_pct")
+            .normalize(args.norm_count)
+            .log_transform()
+        )
+        logger.info("Writing filtered matrix.")
+        if args.text:
+            matrix.to_tsv(args.processed, args.feature)
+        else:
+            matrix.to_mex(args.processed)
+    else:
+        logger.info("Normalizing and log-transforming matrix.")
+        matrix.normalize(args.norm_count).log_transform()
 
-    df_gene = np.log10(df_gene + 1)
-    df_transcript = np.log10(df_transcript + 1)
+    logger.info("Writing mean expression levels.")
+    ExpressionMatrix.write_matrix(
+        args.per_cell_expr,
+        matrix.mean_expression, matrix.tcells, ['mean_expression'], index_name='CB')
 
-    logger.info(
-        f"Processed gene matrix: {df_gene.shape[0]} "
-        f"genes x {df_gene.shape[1]} cells")
-    df_gene.to_csv(f"{args.sample_id}.gene_expression.processed.tsv", sep="\t")
+    if args.enable_umap:
+        # note, we're going to do things in place so ExpressionMatrix will
+        # become modified (trimmed on feature axis, and transposed)
+        mat = matrix._matrix
+        pcn = min(args.pcn, *mat.shape)
+        matrix._features = np.array([f"pca_{i}" for i in range(pcn)])
+        logger.info(f"Performing PCA on matrix of shape: {matrix.matrix.shape}")
+        model = PCA(n_components=pcn, copy=False)
+        mat = model.fit_transform(mat.transpose())  # warning!
+        logger.info(f"PCA output matrix has shape: {mat.shape}")
 
-    logger.info(
-        f"Processed transcript matrix: {df_transcript.shape[0]} "
-        f"transcripts x {df_transcript.shape[1]} cells")
-    df_transcript.to_csv(
-        f"{args.sample_id}.transcript_expression.processed.tsv", sep="\t")
+        for replicate in range(args.replicates):
+            logger.info(f"Performing UMAP replicate {replicate + 1}.")
+            mapper = umap.UMAP(
+                n_neighbors=args.n_neighbors,
+                min_dist=args.min_dist,
+                n_components=args.dimensions,
+                verbose=0)
+            embedding = mapper.fit_transform(mat)
+            logger.info(f"UMAP Embedding has shape: {embedding.shape}")
 
+            # would be nice to avoid a copy here, but the array is fairly small
+            fname = args.umap_tsv
+            if args.replicates > 1:
+                fname = args.umap_tsv.with_suffix(f".{replicate}{args.umap_tsv.suffix}")
+            logger.info(f"Writing UMAP embedding {fname}.")
+            cols = [f"D{i+1}" for i in range(args.dimensions)]
+            out = pd.DataFrame(embedding, columns=cols, index=matrix.tcells)
+            out.to_csv(fname, sep="\t", index=True, index_label="CB")
+        matrix._matrix = mat.transpose()  # undo the PCA transpose
 
-if __name__ == "__main__":
-    args = argparser().parse_args()
-    main(args)
+    logger.info("Done.")

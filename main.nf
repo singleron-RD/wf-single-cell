@@ -5,38 +5,15 @@ import nextflow.util.BlankSeparatedList;
 nextflow.enable.dsl = 2
 
 include { fastq_ingress } from './lib/ingress'
-include { stranding } from './subworkflows/stranding'
-include { align } from './subworkflows/align'
+include { preprocess } from './subworkflows/preprocess'
 include { process_bams } from './subworkflows/process_bams'
 
-
-process chunkReads {
-    // concatenate fastq and fastq.gz in a dir. 
-    // Split into p parts where p is num threads
-
-    label "singlecell"
-    cpus 4
-    input:
-        tuple val(meta),
-              path(reads)
-    output:
-        tuple val(meta),
-              path("chunks/*"),
-              emit: fastq_chunks
-    script:
-    // Split the input fastq into chunks for processing by downstream processes.
-    // If params.adapter_scan_chunk_size is set to 0, partition data into $params.max_threads chunks (with seqkit -p)
-    // Else partition into chunks with params.adapter_scan_chunk_size reads (with seqkit -s)
-    def seqkit_split_opts = (params.adapter_scan_chunk_size == 0) ? "-p $params.max_threads" : "-s $params.adapter_scan_chunk_size"
-
-    """
-    seqkit split2 ${reads} --threads ${task.cpus} ${seqkit_split_opts} -O chunks -o ${meta.alias} -e .gz
-    """
-}
+OPTIONAL_FILE = file("$projectDir/data/OPTIONAL_FILE")
 
 process getVersions {
     label "singlecell"
     cpus 1
+    memory "1 GB"
     output:
         path "versions.txt"
     script:
@@ -61,6 +38,7 @@ process getVersions {
 process getParams {
     label "singlecell"
     cpus 1
+    memory "1 GB"
     output:
         path "params.json"
     script:
@@ -71,102 +49,50 @@ process getParams {
     """
 }
 
+
 process makeReport {
     label "wf_common"
+    cpus 1
+    memory "32 GB"
+    publishDir "${params.out_dir}", mode: 'copy', pattern: "wf-single-cell-report.html"
     input:
+        val metadata
         path 'versions'
         path 'params.csv'
-        path 'per_read_stats/stats_?.tsv.gz'
+        path stats, stageAs: "stats_*"
         path 'survival.tsv'
-        path 'wf_summary.tsv'
         path umap_dirs
         path images
         path umap_genes
+        val wf_version
 
     output:
         path "wf-single-cell-*.html"
     script:
-        report_name = "wf-single-cell-report.html"
+        String report_name = "wf-single-cell-report.html"
+        String metadata = new JsonBuilder(metadata).toPrettyString()
     """
+    echo '${metadata}' > metadata.json
     workflow-glue report \
-        --read_stats_dir per_read_stats \
+        $report_name \
+        --stats $stats \
         --params params.csv \
         --versions versions \
         --survival survival.tsv \
-        --wf_summary wf_summary.tsv \
-        --output ${report_name} \
-        --umap_dirs ${umap_dirs} \
-        --images ${images} \
-        --umap_genes ${umap_genes}
+        --umap_dirs $umap_dirs \
+        --images $images \
+        --umap_genes $umap_genes \
+        --metadata metadata.json \
+        --wf_version $wf_version \
+        --metadata metadata.json
     """
 }
 
-
-process mergeTags {
-    /*
-    Merge a subset of columns from the bam info and extracted barcode TSVs
-    To give a TSV with the following columns
-        [read_id, CR, CY, UR, UY, start, end, chr, mapq]
-    */
-    label "wf_common"
-    input:
-        tuple val(meta),
-              val(chunk_id),
-              path('barcodes.tsv'),
-              path('bam_info.tsv')
-
-    output:
-        tuple val(meta),
-              path("merged_tags.tsv")
-    """
-    csvtk cut -tlf Read,Pos,EndPos,Ref,MapQual bam_info.tsv > bam_info_cut.tsv
-    # Left join of barcode
-    csvtk join -tlf 1 bam_info_cut.tsv barcodes.tsv --left-join \
-        | csvtk rename -tl -f Read,Pos,EndPos,Ref,MapQual -n read_id,start,end,chr,mapq -o merged_tags.tsv
-    """
-}
-
-
-// See https://github.com/nextflow-io/nextflow/issues/1636
-// This is the only way to publish files from a workflow whilst
-// decoupling the publish from the process steps.
-process output {
-    label "singlecell"
-    // // publish inputs to output directory
-    publishDir "${params.out_dir}", mode: 'copy', pattern: "*.{bam,bai}",
-        saveAs: { filename -> "${meta.alias}/bams/$filename" }
-    publishDir "${params.out_dir}", mode: 'copy', pattern: "*umap*.{tsv,png}",
-        saveAs: { filename -> "${meta.alias}/umap/$filename" }
-    publishDir "${params.out_dir}", mode: 'copy', 
-        pattern: "*{images,counts,gene_expression,transcript_expression,kneeplot,saturation,config,tags,whitelist,transcriptome,annotation}*",
-        saveAs: { filename -> "${meta.alias}/$filename" }
-
-    input:
-        tuple val(meta),
-              path(fname)
-    output:
-        path fname
-    """
-    echo "Writing output files"
-    """
-}
-
-
-process output_report {
-    // publish inputs to output directory
-    label "singlecell"
-    publishDir "${params.out_dir}", mode: 'copy', pattern: "*"
-    input:
-        path fname
-    output:
-        path fname
-    """
-    echo "Writing output files."
-    """
-}
 
 process parse_kit_metadata {
     label "singlecell"
+    cpus 1
+    memory "1 GB"
     input:
         path 'sample_ids'
         path sc_sample_sheet
@@ -200,35 +126,27 @@ process parse_kit_metadata {
 process prepare_report_data {
     label "singlecell"
     cpus 1
-    memory 1.GB
+    memory "1 GB"
     input:
         tuple val(meta),
-              path('read_tags'),
-              path('config_stats'),
-              path('white_list'),
-              path('gene_expression'),
-              path('transcript_expression'),
-              path('mitochondrial_expression'),
+              path('adapter_stats/stats*.json'),
+              path('expression_stats/stats*.json'),
+              path('white_list.txt'),
+              path('gene_mean_expression.tsv'),
+              path('transcript_mean_expression.tsv'),
+              path('mitochondrial_expression.tsv'),
               path(umaps)
     output:
-        path 'survival_data.tsv',
-            emit: survival
-        path 'sample_summary.tsv',
-            emit: summary
-        path "${meta.alias}_umap",
-            emit: umap_dir
+        path "survival.tsv", emit: survival  // not meta.alias here, breaks collectFile()
+        path "${meta.alias}_umap", emit: umap_dir
 
     script:
         opt_umap = umaps.name != 'OPTIONAL_FILE'
+        String hist_dir = "histogram_stats/${meta.alias}"
     """
     workflow-glue prepare_report_data \
-        --read_tags read_tags \
-        --config_stats config_stats \
-        --white_list white_list \
-        --sample_id ${meta.alias} \
-        --summary_out sample_summary.tsv \
-        --survival_out survival_data.tsv
-
+        "${meta.alias}" adapter_stats expression_stats white_list.txt survival.tsv
+    
     umd=${meta.alias}_umap
     mkdir \$umd
 
@@ -236,9 +154,9 @@ process prepare_report_data {
         echo "Adding umap data to sample directory"
         # Add data required for umap plotting into sample directory
         mv *umap*.tsv \$umd
-        mv ${gene_expression} \$umd
-        mv ${transcript_expression} \$umd
-        mv ${mitochondrial_expression} \$umd
+        mv gene_mean_expression.tsv \$umd
+        mv transcript_mean_expression.tsv \$umd
+        mv mitochondrial_expression.tsv \$umd
     else
         touch "\$umd"/OPTIONAL_FILE
     fi
@@ -249,11 +167,9 @@ process prepare_report_data {
 // workflow module
 workflow pipeline {
     take:
-        meta
+        chunks
         ref_genome_dir
         umap_genes
-        per_read_stats
-
     main:
         // throw an exception for deprecated conda users
         if (workflow.profile.contains("conda")) {
@@ -269,61 +185,56 @@ workflow pipeline {
         workflow_params = getParams()
 
         bc_longlist_dir = file("${projectDir}/data", checkIfExists: true)
-        chunkReads(meta)
 
-        // Add chunk id to chunks channel; allows resulting BAM info and tags channels to be combined in mergeTags()
-        fastq_chunks = chunkReads.out.fastq_chunks
-            .transpose()
-            .map {meta, file -> [meta, file.baseName, file]}
-
-        stranding(
-            fastq_chunks,
-            bc_longlist_dir)
-
-        align(
-            // Group by meta 
-            stranding.out.stranded_trimmed_fq,
+        preprocess(
+            chunks.map{meta, fastq, stats -> [meta, fastq]},
+            bc_longlist_dir,
             ref_genome_fasta,
             ref_genome_idx,
             ref_genes_gtf)
 
-        // Combine barcodes and BAM by chunk, then merge the tags
-        barcodes = mergeTags(stranding.out.extracted_barcodes
-            .join(align.out.bam_info, by: [0, 1])
-        )
-
         process_bams(
-            align.out.bam_sort,
-            barcodes,
+            preprocess.out.bam_sort,
+            preprocess.out.read_tags,
+            preprocess.out.high_qual_bc_counts.groupTuple(),
             ref_genes_gtf,
-            bc_longlist_dir,
             ref_genome_fasta,
             ref_genome_idx)
 
         prepare_report_data(
-            process_bams.out.final_read_tags
-            .join(stranding.out.config_stats)
+            preprocess.out.adapter_summary.groupTuple()
+            .join(process_bams.out.expression_stats
+                .groupTuple()
+                .map{meta, chrs, stats -> [meta, stats]})
             .join(process_bams.out.white_list)
-            .join(process_bams.out.gene_expression)
-            .join(process_bams.out.transcript_expression)
+            .join(process_bams.out.gene_mean_expression)
+            .join(process_bams.out.transcript_mean_expression)
             .join(process_bams.out.mitochondrial_expression)
             .join(process_bams.out.umap_matrices))
 
+        // Get the metadata and stats for the report
+        chunks
+            .groupTuple()
+            .multiMap{ meta, chunk, stats ->
+                meta: meta
+                stats: stats[0]
+            }.set { for_report }
+        metadata = for_report.meta.collect()
+        stats = for_report.stats.collect()
+
+        // note the cheeky little .collectFile() here to concatenate the
+        // read survival stats from different samples into a single file
         makeReport(
+            metadata,
             software_versions,
             workflow_params,
-            per_read_stats.collect(),
+            stats,
             prepare_report_data.out.survival
                 .collectFile(keepHeader:true),
-            prepare_report_data.out.summary
-                .collectFile(keepHeader:true),
-            prepare_report_data.out.umap_dir,
+            prepare_report_data.out.umap_dir.collect(),
             process_bams.out.plots,
-            umap_genes)
-    emit:
-        results = process_bams.out.results
-        config_stats = stranding.out.config_stats
-        report = makeReport.out
+            umap_genes,
+            workflow.manifest.version)
 }
 
 
@@ -352,12 +263,10 @@ workflow {
             "input":params.fastq,
             "sample":params.sample,
             "sample_sheet":params.sample_sheet,
-            "stats": true])
+            "fastq_chunk": params.fastq_chunk,
+            "stats": true,
+            "per_read_stats": false])
 
-    per_read_stats = samples.map { 
-        meta, reads, stats ->
-        [meta, file(stats.resolve('*read*.tsv.gz'))[0]
-        ]}.map {meta, stats -> stats}
 
     if (!params.single_cell_sample_sheet) {
 
@@ -367,31 +276,28 @@ workflow {
         sc_sample_sheet = file(params.single_cell_sample_sheet, checkIfExists: true)
     }
 
-    fastqingress_ids = samples.map{it -> it[0]['alias']}.collectFile(newLine: true)
+    fastqingress_ids = samples.map {meta, file, stats -> meta.alias }.unique().collectFile(newLine: true)
     // Get [sample_id, kit_meta]
     kit_meta = parse_kit_metadata(fastqingress_ids, sc_sample_sheet, kit_configs_file)
         .splitCsv(header:true)
         .map {it -> [it['sample_id'], it]}
     // Merge the kit metadata onto the sample metadata
-    // Put sample_id as first element for join
-    sample_and_kit_meta = samples.map {meta, reads, stats -> [meta.alias, meta, reads]}
-        .join(kit_meta)
-        .map {sample_id, sample_meta, reads, kit_meta -> [sample_meta + kit_meta, reads]}
+    sample_and_kit_meta = kit_meta
+        .cross(samples
+            // Put sample_id as first element for join
+            .map {meta, chunk, stats -> [meta.alias, meta, chunk, stats]})
+        // Extract the joined sample and kit info from the cross results
+        .map {kit, sample -> [ sample[1] + kit[1], sample[2], sample[3]]}
+        // we never need the chunk index for merging items so discard it
+        .map {meta, chunk, stats ->
+            def new_meta = meta.clone()
+            new_meta.remove('group_index')
+            [new_meta, chunk, stats]}
 
-    pipeline(sample_and_kit_meta, ref_genome_dir, umap_genes, per_read_stats)
-
-    output(pipeline.out.results.flatMap({it ->
-        // Convert [meta, file, file, ..]
-        // to      [[meta, file], [meta, file], ...]
-        l = [];
-            for (i=1; i<it.size(); i++) {
-                l.add(tuple(it[0], it[i]))
-            }
-            return l
-        }).concat(pipeline.out.config_stats)
-    )
-
-    output_report(pipeline.out.report)
+    pipeline(
+        sample_and_kit_meta,
+        ref_genome_dir,
+        umap_genes)
 }
 
 workflow.onComplete {
