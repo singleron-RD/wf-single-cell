@@ -377,29 +377,24 @@ def align_adapter_multi(args, multi, fastq_out=sys.stdout):
     # Use only the specified suffix length of adapter1
     adapter1_probe_seq = args.adapter1_seq[-args.adapter1_suff_length:]
 
-    if multi in ('ArgenTAG','GEXSCOPE-V1'):
-        linker1_list = ['ATCCACGTGCTTGAGA']
-        linker2_list= ['TCAGCATGCGGCTACG']
-    elif multi == 'GEXSCOPE-V2':
-        linker1_list = [
-            'ATCCACGTGCTTGAGA',
-            'TCGGTGACAGCCATAT',
-            'CGAACATGTAGGTCTC',
-            'GATTGTCACTAACGCG',
+    if multi == 'flv':
+        sequences = [
+            "CGTAGCCGCATGCTGATCTCAAGCACGTGGAT",
+            "TCAGCTTCTGACTACGATATGGCTGTCACCGA",
+            "ATGCTAATACGTAGTCGAGACCTACATGTTCG",
+            "GACTAGGAGTCAGCATCGCGTTAGTGACAATC",
         ]
-        linker2_list = [
-            'TCAGCATGCGGCTACG',
-            'CGTAGTCAGAAGCTGA',
-            'GACTACGTATTAGCAT',
-            'ATGCTGACTCCTAGTC',
-        ]
+        linker1_list = []
+        linker2_list = []
+        for seq in sequences:
+            linker1_list.append(seq[:16])
+            linker2_list.append(seq[-16:])
     patterns = []
     for linker1,linker2 in zip(linker1_list, linker2_list):
-        probe_seq = "{a1}{bc}{linker1}{bc}{linker2}{bc}C{umi}{pt}".format(
+        probe_seq = "{a1}{umi}{bc}{linker1}{bc}{linker2}{bc}".format(
                 a1=adapter1_probe_seq,
                 bc="N" * args.barcode_length,
                 umi="N" * args.umi_length,
-                pt="T" * args.polyt_length,
                 linker1=linker1,
                 linker2=linker2,
             )
@@ -592,14 +587,8 @@ def main(args):
 
     logger.info(f"Extracting uncorrected barcodes from {args.fastq}")
     multi = None
-    if "ArgenTAG" in args.superlist:
-        multi = "ArgenTAG"
-        args.window = 300
-    elif "GEXSCOPE-V1" in args.superlist:
-        multi = "GEXSCOPE-V1"
-        args.window = 200
-    elif "GEXSCOPE-V2" in args.superlist:
-        multi = "GEXSCOPE-V2"
+    if "flv" in args.superlist:
+        multi = "flv"
         args.window = 200
     if multi:
         barcode_counts = align_adapter_multi(args, multi)
