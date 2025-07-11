@@ -486,16 +486,24 @@ def align_adapter_multi(args, multi, fastq_out=sys.stdout):
     bc_counts.index.name = 'barcode'
     return bc_counts
 
-def get_bc_umi(target, barcode_length):
+def get_bc_umi(target):
     """
-    >>> target = "CTTCCGATCTNNNNNNNNNTCGGTGACAGCCATATNNNNNNNNNCGTAGTCAGAAGCTGANNNNNNNNNCNNNNNNNNNNNNTTTTT"
-    >>> barcode_length = 9
-    >>> bcs,umi = get_bc_umi(target, barcode_length)
+    >>> a1 = 'CTACACGACGCTCTTCCGATCT' # length 22
+    >>> linker = 'CGTAGCCGCATGCTGATCTCAAGCACGTGGAT'
+    >>> linker1, linker2 = linker[:16], linker[-16:]
+    >>> target = a1 + 'N'*9 + 'N'*8 + linker1 + 'N'*8 + linker2 + 'N'*8
+    >>> bcs,umi = get_bc_umi(target)
+    >>> bcs
+    [slice(31, 39, None), slice(55, 63, None), slice(79, 87, None)]
+    >>> umi
+    slice(22, 31, None)
+
     """
     n = len(target)
     i = 0
     bcs = []
     umi = None
+    part = 0
     while i < n:
         if target[i] != 'N':
             i += 1
@@ -503,12 +511,12 @@ def get_bc_umi(target, barcode_length):
         start = i
         while i<n and target[i] == 'N':
             i += 1
-        cur = slice(start, i)
-        cur_len = i-start
-        if cur_len == barcode_length:
-            bcs.append(cur)
+        part += 1
+        if part == 1:
+            umi = slice(start, start + 9)
+            bcs.append(slice(start + 9, start + 9 + 8))
         else:
-            umi = cur
+            bcs.append(slice(start, start + 8))
     return bcs, umi
 
 def parse_probe_alignment_multi(
@@ -526,7 +534,7 @@ def parse_probe_alignment_multi(
     # Find the position of the Ns in the alignment. These correspond
     # to the cell barcode + UMI sequences bound by the read1 and polyT
     bc_start_pos = ref_alignment.find('N')
-    bc_slice, umi_slice = get_bc_umi(ref_alignment, barcode_length)
+    bc_slice, umi_slice = get_bc_umi(ref_alignment)
     if bc_start_pos > -1 and len(bc_slice)==3 and umi_slice:
         # umi_end_pos = bc_start_pos + barcode_length + umi_length
 
@@ -547,10 +555,6 @@ def parse_probe_alignment_multi(
         # The adapter1 sequence comprises the first part of the alignment
         adapter1 = query_alignment[0:bc_start_pos]
         adapter1_ed = ed.eval(adapter1, adapter1_probe_seq)
-
-        # try to correct barcode here
-        bcs = [query_alignment[bc] for bc in bc_slice]
-
 
         barcode = "".join([query_alignment[bc] for bc in bc_slice])
         barcode_no_ins = barcode.replace("-", "")
