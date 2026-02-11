@@ -1,48 +1,4 @@
-process call_paftools {
-    label "singlecell"
-    memory "2 GB"
-    cpus 1
-    input:
-        path "ref_genes.gtf"
-    output:
-        path "ref_genes.bed", emit: ref_genes_bed
-    """
-    paftools.js gff2bed -j ref_genes.gtf > ref_genes.bed
-    """
-}
-
-
-process get_chrom_sizes {
-    label "singlecell"
-    memory "1 GB"
-    cpus 1
-    input:
-        path "ref_genome.fai"
-    output:
-        path 'chr_sizes', emit: ref_chrom_sizes
-    """
-    cut -f1,2 ref_genome.fai | sort -V > chr_sizes
-    """
-}
-
-
-process build_minimap_index {
-    /*
-    Build minimap index from reference genome
-    */
-    label "singlecell"
-    cpus params.threads
-    memory '16 GB'
-    input:
-        path "reference.fa"
-    output:
-        path "genome_index.mmi", emit: index
-    script:
-    """
-    minimap2 -t ${task.cpus} -I 16G -d "genome_index.mmi" "reference.fa"
-    """
-}
-
+include { call_paftools; build_minimap_index} from '../modules/local/common'
 
 process call_adapter_scan {
     label "singlecell"
@@ -53,7 +9,7 @@ process call_adapter_scan {
     // in parallel. The resolution to that would be to make the first two steps do
     // better parallelism. The advantage here is not having to write to disk, stage files
     // and read from disk between the steps (creating a lot of big temporary files).
-    // 
+    //
     // peak RSS for aligning this data is robustly <12.4 GB with human reference. Set
     // a little more and do a retry
     memory {15.GB * task.attempt}
@@ -64,12 +20,12 @@ process call_adapter_scan {
         path "bc_longlist_dir"
         path "genome_index.mmi"
         path "ref_genes.bed"
-        path "ref_chrom_sizes.tsv"
     output:
         tuple val(meta), path("adapters.json"), emit: adapter_summary
-        tuple val(meta), path("read_tags.tsv"), emit: read_tags
+        tuple val(meta), path("read_tags.tsv.zst"), emit: read_tags
         tuple val(meta), path("high_quality_bc_counts.tsv"), emit: barcode_counts
         tuple val(meta), path("sorted.bam"), path("sorted.bam.bai"), emit: bam_sort
+        tuple val(meta), path("bamstats.tsv"), emit: bam_stats
     script:
     def fl = params.full_length_only ? "--keep_fl_only": ""
     // alignment is the real bottleneck here, don't worry about threads
@@ -89,8 +45,7 @@ process call_adapter_scan {
         --kit ${meta['kit_name']} \
         --summary "adapters.json" \
         ${fl} \
-    | \
-    workflow-glue extract_barcode \
+    | workflow-glue extract_barcode \
         - \
         bc_longlist_dir/${meta['bc_long_list']} \
         --kit ${meta["kit_name"]} \
@@ -98,39 +53,74 @@ process call_adapter_scan {
         --min_barcode_qv $params.barcode_min_quality \
         --barcode_length ${meta['barcode_length']} \
         --umi_length ${meta['umi_length']} \
-        --output_read_tags "bc_extract.tsv" \
+        --output_read_tags "bc_extract.tsv.zst" \
         --output_barcode_counts "high_quality_bc_counts.tsv" \
-    | \
-    minimap2 -ax splice -uf --secondary=no --MD \
+    | minimap2 -ax splice -uf --MD \
         -t $mm2_threads -K 10M \
         --junc-bed ref_genes.bed  \
-        --cap-kalloc 100m --cap-sw-mem 50m \
+        --cap-kalloc 100m \
         genome_index.mmi - \
-    | samtools view -u --no-PG -t ref_chrom_sizes - \
+    | samtools view -uh --no-PG - \
+    | tee >(seqkit bam -s  2> bamstats.tsv ) \
+    | tee >(samtools view - -d SA \
+        | awk 'BEGIN{OFS="\t"; print "read_id", "SA"} {print \$1,"True"}' > SA_tags.tsv ) \
+    | samtools view -uh -F 256 - \
     | tee >(samtools sort --write-index -o "sorted.bam"##idx##"sorted.bam.bai" --no-PG  -) \
     | seqkit bam -F - 2> bam_info.tsv
 
     # TODO: improve this with pipes?
     csvtk cut -tlf Read,Pos,EndPos,Ref,MapQual bam_info.tsv > bam_info_cut.tsv
     # Left join of barcode
-    csvtk join -tlf 1 bam_info_cut.tsv bc_extract.tsv --left-join \
-        | csvtk rename -tl -f Read,Pos,EndPos,Ref,MapQual -n read_id,start,end,chr,mapq -o read_tags.tsv
+    zstdcat bc_extract.tsv.zst | csvtk join -tlf 1 bam_info_cut.tsv -  --left-join \
+        | csvtk rename -tl -f Read,Pos,EndPos,Ref,MapQual -n read_id,start,end,chr,mapq -o read_tags_interim.tsv
 
-    rm bam_info.tsv bam_info_cut.tsv bc_extract.tsv
+    # Merge the SA column with the read tags on read_id
+    if [ \$(wc -l < SA_tags.tsv) -eq 1 ]; then
+        echo "No SA tags found"
+        # Add an empty SA column
+        csvtk mutate2 -t -n 'SA' -e " '' " read_tags_interim.tsv | zstd > read_tags.tsv.zst
+    else
+        csvtk -t uniq SA_tags.tsv | csvtk join -t --left-join --fields read_id read_tags_interim.tsv - | zstd > read_tags.tsv.zst
+    fi
+    rm bam_info.tsv bam_info_cut.tsv bc_extract.tsv.zst read_tags_interim.tsv
     """
 }
 
 
-process summarize_adapter_table {
+process summarize_and_publish_adapters {
     label "singlecell"
+    publishDir "${params.out_dir}/${meta.alias}", mode: 'copy'
     cpus 1
     memory "1 GB"
     input:
         tuple val(meta), path("inputs/summary*.json")
     output:
-        tuple val(meta), path("config_stats.json"), emit: config_stats
+        tuple val(meta), path("${meta.alias}.config_stats.json"), emit: config_stats
+    script:
     """
-    workflow-glue summarise_adapters inputs config_stats.json
+    workflow-glue summarise_adapters inputs "${meta.alias}.config_stats.json"
+    """
+}
+
+
+
+process merge_bams {
+    // Combine all BAMs derived from the initial chunking into per sample files
+    label "wf_common"
+    cpus params.threads
+    memory "8 GB"
+    input:
+        tuple val(meta),
+            path('bams/*aln.bam'),
+            path('bams/*aln.bam.bai')
+    output:
+        tuple val(meta),
+              path("merged.sorted.bam"),
+              path("merged.sorted.bam.bai"),
+              emit: merged_bam
+    script:
+    """
+    samtools merge -@ ${task.cpus -1} --write-index -o "merged.sorted.bam##idx##merged.sorted.bam.bai" bams/*.bam
     """
 }
 
@@ -141,30 +131,28 @@ workflow preprocess {
         read_chunks
         bc_longlist_dir
         ref_genome_fasta
-        ref_genome_idx
         ref_genes_gtf
     main:
         // alignment pre-requisites
-        call_paftools(ref_genes_gtf)
-        get_chrom_sizes(ref_genome_idx)
-        build_minimap_index(ref_genome_fasta)
-        
+        index_mmi = build_minimap_index(ref_genome_fasta)
+        ref_genes_bed = call_paftools(ref_genes_gtf)
+
+
         // find adapters, trim barcodes, and align
         call_adapter_scan(
             read_chunks,
             bc_longlist_dir,
             build_minimap_index.out.index,
-            call_paftools.out.ref_genes_bed,
-            get_chrom_sizes.out.ref_chrom_sizes)
+            ref_genes_bed)
+        
+        summarize_and_publish_adapters(
+           call_adapter_scan.out.adapter_summary.groupTuple())
 
-        // TODO: we don't necessarily need to merge these, they
-        //       could just be given to the final reporting
-        //       without pre-aggregating
-        //summarize_adapter_table(
-        //    call_adapter_scan.out.adapter_summary.groupTuple())
+        merged_bam = merge_bams(call_adapter_scan.out.bam_sort.groupTuple())
 
     emit:
-        bam_sort = call_adapter_scan.out.bam_sort
+        merged_bam = merged_bam
+        bam_stats = call_adapter_scan.out.bam_stats
         read_tags = call_adapter_scan.out.read_tags
         high_qual_bc_counts = call_adapter_scan.out.barcode_counts
         adapter_summary = call_adapter_scan.out.adapter_summary

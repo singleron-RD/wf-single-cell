@@ -30,6 +30,11 @@ def argparser():
         type=Path,
         required=True
     )
+    parent_parser.add_argument(
+        "--spaceranger_bam",
+        help="premade demultiplex tags CSV",
+        default=None
+    )
 
     subparsers = parser.add_subparsers(help='commands', dest="cmd")
 
@@ -50,13 +55,8 @@ def argparser():
         parents=[parent_parser],
     )
     parser_cli.add_argument(
-        "--kit_name",
-        help="kit_name",
-        required=True
-    )
-    parser_cli.add_argument(
-        "--kit_version",
-        help="Kit version",
+        "--kit",
+        help="10x kit (name:version)",
         required=True
     )
     parser_cli.add_argument(
@@ -64,16 +64,21 @@ def argparser():
         help="Number of expected cells",
         required=True
     )
+    parser_cli.add_argument(
+        "--adapter_stats",
+        help="premade demultiplex tags CSV",
+        default=None
+    )
 
     return parser
 
 
 def main(args):
     """Entry point."""
+    # Single cell sample sheet expected header
     sc_sample_sheet_header = [
         'sample_id',
-        'kit_name',
-        'kit_version',
+        'kit',
         'expected_cells'
     ]
 
@@ -83,14 +88,23 @@ def main(args):
         # No per-sample single-cell sample sheet given by user, so we will use the
         # individual CLI parameters to build a CSV and apply the same parameters to
         # each sample
-        entries = [
-            [sid.strip(), args.kit_name, args.kit_version, args.expected_cells]
-            for sid in sample_ids
-        ]
+        if args.spaceranger_bam:
+            sc_sample_sheet_header.extend(['spaceranger_bam', 'adapter_stats'])
+        entries = []
+        for sid in sample_ids:
+            entry = [sid.strip(), args.kit, args.expected_cells]
+            if args.spaceranger_bam:
+                entry.extend([args.spaceranger_bam, args.adapter_stats])
+            entries.append(entry)
         user_df = pd.DataFrame.from_records(
             entries, columns=sc_sample_sheet_header
         )
+
     elif args.cmd == 'from_sheet':
+        if args.spaceranger_bam:
+            raise NotImplementedError("""
+                --single_cell_sample_sheet is not currently compatible
+                with --spaceranger_bam""")
         user_df = pd.read_csv(args.user_config)
 
         # Validate sample sheet header
@@ -99,14 +113,11 @@ def main(args):
                 'single_cell_sample_sheet should have the following column names: '
                 f'{sc_sample_sheet_header}')
 
-    # Validate kit + version cominations. Create a kit + version columns for both the
-    # user-supplied data and the supported kit + version combinations
-    user_df['kit_name_ver'] = user_df.kit_name + ' ' + user_df.kit_version
-    kit_df = pd.read_csv(args.kit_config)
-    kit_df['kit_name_ver'] = kit_df.kit_name + ' ' + kit_df.kit_version
+    # Validate kit + version combinations.
+    kit_df = pd.read_csv(args.kit_config, keep_default_na=False)
 
-    # Check if all supplied kits + versions are supported
-    kit_and_version_diff = set(user_df.kit_name_ver).difference(kit_df.kit_name_ver)
+    # Check if all supplied kits + version strings are supported
+    kit_and_version_diff = set(user_df.kit).difference(kit_df.kit)
     if len(kit_and_version_diff) != 0:
         raise ValueError(
             'the following are not valid kit and version combinations: '
@@ -126,7 +137,10 @@ def main(args):
         )
 
     merged_config = user_df.merge(
-        kit_df, on='kit_name_ver', how='left', suffixes=(None, '_delete'))
+        kit_df, on='kit', how='left', suffixes=(None, '_delete'))
+    # Create kit name and version columns from the kit:version string
+    merged_config[['kit_name', 'kit_version']] \
+        = merged_config['kit'].str.split(':', expand=True)
     cols_to_drop = merged_config.columns[merged_config.columns.str.contains('delete')]
     merged_config = merged_config.drop(cols_to_drop, axis=1)
     merged_config.to_csv(args.output, sep=',', index=False)

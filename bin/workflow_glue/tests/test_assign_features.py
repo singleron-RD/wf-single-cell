@@ -54,7 +54,7 @@ def getbam():
     return bam
 
 
-def test_main():
+def test_main(tmp_path):
     """Test main."""
     # gffcompare tmap dataframe. Maps stringtie transcripts (qry_id)
     # to reference transcripts and reference gene IDs
@@ -67,7 +67,7 @@ def test_main():
         df_gffcompare_tmap_rows, columns=[
             ['qry_id', 'ref_id', 'ref_gene_id', 'class_code']]
     )
-    gffcompare_file = tempfile.NamedTemporaryFile('w', delete=False, suffix='.tsv').name
+    gffcompare_file = tmp_path / 'gffcompare.tmap'
     df_gffcompare_tmap.to_csv(gffcompare_file, sep='\t', index=None)
 
     # All we want from tags is the mapq alignment score
@@ -79,30 +79,29 @@ def test_main():
     df_tags = pd.DataFrame(
         df_tags_rows, columns=['read_id', 'mapq']
     )
-    tags_file = tempfile.NamedTemporaryFile('w', delete=False, suffix='.tsv').name
-    df_tags.to_csv(tags_file, index=None, sep='\t')
+    tags_file = tmp_path / 'tags.tsv.zst'
+    df_tags.to_csv(tags_file, index=None, sep='\t', compression='zstd')
 
     # GTF file is used for mapping transcript id (from the gffcompare tmap file) to
     # gene name.
     # Here is just a subset of the gtf. We need 'transcript' in pos [2]. gene_name and
     # transcript_id are grepped
-    gtf_str = (
+    gtf_lines = (
         'chr1\tHAVANA\ttranscript\tgene_name "gene_name_1";transcript_id "ref_tr_1";\n',
         'chr1\tHAVANA\ttranscript\tgene_name "gene_name_2";transcript_id "ref_tr_2";\n',
         'chr1\tHAVANA\ttranscript\tgene_name "gene_name_3";transcript_id "ref_tr_3";\n',
         'chr1\tHAVANA\ttranscript\tgene_name "gene_name_4";transcript_id "ref_tr_4";',
     )
 
-    with tempfile.NamedTemporaryFile('w', delete=False, suffix='.tsv') as fh:
-        fh.writelines(gtf_str)
-        gtf_file = fh.name
+    gtf_file = tmp_path / 'transcripts.gtf'
+    gtf_file.write_text(''.join(gtf_lines))
 
     class Args:
         transcriptome_bam = getbam()
         gffcompare_tmap = gffcompare_file
         tags = tags_file
         gtf = gtf_file
-        output = tempfile.NamedTemporaryFile('w', suffix='.tsv', delete=False).name
+        output = tmp_path / 'feature_assignments.tsv.zst'
         min_mapq = 30
         min_tr_coverage = 0.4
         min_read_coverage = 0.4

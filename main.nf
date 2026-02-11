@@ -4,11 +4,36 @@ import groovy.json.JsonBuilder
 import nextflow.util.BlankSeparatedList;
 nextflow.enable.dsl = 2
 
-include { fastq_ingress } from './lib/ingress'
+include { fastq_ingress; xam_ingress } from './lib/ingress'
+include { xam_ingress as spaceranger_ingress } from './lib/ingress'
 include { preprocess } from './subworkflows/preprocess'
 include { process_bams } from './subworkflows/process_bams'
+include { longshot as snv } from './subworkflows/snv'
+include { ctat_lr_fusion as fusions; get_ctat_data} from './subworkflows/fusions'
+include { correct_10x_barcodes } from './subworkflows/barcode_correction'
+include { assign_features_with_stringtie } from './subworkflows/assign_features'
+include { spaceranger} from './subworkflows/process_spaceranger'
+include { getParams } from './lib/common'
+include { make_fasta_index } from './modules/local/common'
 
 OPTIONAL_FILE = file("$projectDir/data/OPTIONAL_FILE")
+
+
+process uncompress_ref {
+    label "wf_common"
+    cpus 1
+    memory "3 GB"
+    input:
+        path "ref.fa.gz"
+    output:
+        path "ref.fa", emit: fasta
+        path "ref.fa.fai", emit: index
+    script:
+    """
+    zcat ref.fa.gz > ref.fa 
+    samtools faidx ref.fa
+    """
+}
 
 process getVersions {
     label "singlecell"
@@ -23,7 +48,6 @@ process getVersions {
     python -c "import pandas; print(f'pandas,{pandas.__version__}')" >> versions.txt
     python -c "import rapidfuzz; print(f'rapidfuzz,{rapidfuzz.__version__}')" >> versions.txt
     python -c "import sklearn; print(f'scikit-learn,{sklearn.__version__}')" >> versions.txt
-    fastcat --version | sed 's/^/fastcat,/' >> versions.txt
     minimap2 --version | sed 's/^/minimap2,/' >> versions.txt
     samtools --version | head -n 1 | sed 's/ /,/' >> versions.txt
     bedtools --version | head -n 1 | sed 's/ /,/' >> versions.txt
@@ -35,17 +59,22 @@ process getVersions {
 }
 
 
-process getParams {
-    label "singlecell"
+process get_10x_data {
+    label "wf_common"
     cpus 1
-    memory "1 GB"
+    memory "2 GB"
+    storeDir {params.store_dir ? "${params.store_dir}/${name}" : null }
+    input:
+            val name
+            val url
     output:
-        path "params.json"
+        path "fasta/genome.fa", emit: genome_fasta
+        path "fasta/genome.fa.fai", emit: genome_idx
+        path "genes/genes.gtf", emit: genes_gtf
     script:
-        def paramsJSON = new JsonBuilder(params).toPrettyString()
     """
-    # Output nextflow params object to JSON
-    echo '$paramsJSON' > params.json
+    # Remove the top-level directory from inside the archive (--strip-components=1)  
+    wget -qO- $url | tar --no-same-owner -xzv --strip-components=1
     """
 }
 
@@ -53,38 +82,57 @@ process getParams {
 process makeReport {
     label "wf_common"
     cpus 1
-    memory "32 GB"
+    memory "31 GB"
     publishDir "${params.out_dir}", mode: 'copy', pattern: "wf-single-cell-report.html"
     input:
         val metadata
+        path 'results.json'
         path 'versions'
         path 'params.csv'
         path stats, stageAs: "stats_*"
         path 'survival.tsv'
-        path umap_dirs
-        path images
-        path umap_genes
+        path expression_dirs
+        path genes_of_interest, stageAs: "goi/*"
         val wf_version
+        path 'seq_saturation.tsv'
+        path 'gene_saturation.tsv'
+        path 'knee_plot_counts.tsv'
+        path 'bam_stats.tsv'
+        path 'fusion_results_dir/*'
+        path visium_non_hd_coords, stageAs: 'visium_coords/*'
 
     output:
         path "wf-single-cell-*.html"
     script:
-        String report_name = "wf-single-cell-report.html"
-        String metadata = new JsonBuilder(metadata).toPrettyString()
+        def report_name = "wf-single-cell-report.html"
+        def metadata = new JsonBuilder(metadata).toPrettyString()
+        def visium_opt = visium_non_hd_coords.fileName.name != "OPTIONAL_FILE" ? "--visium_spatial_coords ${visium_non_hd_coords.name}" : ""
+        def goi_opt = genes_of_interest.fileName.name != "OPTIONAL_FILE" ? "--genes_of_interest ${genes_of_interest.name}": ""
+        def visium_hd_opt =  params.spaceranger_bam ? '--visium_hd' : ""
+        def q_filtered = params.min_read_qual ? "--q_filtered": ""
+        def fusion_opt = params.call_fusions ? "--fusion_results_dir fusion_results_dir" : ""
     """
     echo '${metadata}' > metadata.json
     workflow-glue report \
         $report_name \
         --stats $stats \
+        --results results.json \
         --params params.csv \
         --versions versions \
         --survival survival.tsv \
-        --umap_dirs $umap_dirs \
-        --images $images \
-        --umap_genes $umap_genes \
+        --expr_dirs $expression_dirs \
         --metadata metadata.json \
         --wf_version $wf_version \
-        --metadata metadata.json
+        --metadata metadata.json \
+        --bam_stats bam_stats.tsv \
+        --seq_saturation seq_saturation.tsv \
+        --gene_saturation gene_saturation.tsv \
+        --knee_plot_counts knee_plot_counts.tsv \
+        $fusion_opt \
+        $q_filtered \
+        $visium_opt \
+        $visium_hd_opt \
+        $goi_opt
     """
 }
 
@@ -109,56 +157,113 @@ process parse_kit_metadata {
             --output merged.csv
         """
     }else{
+        // A visium barcode is a tissue coordinate not a cell, so we don't need expected cells.
+        if (!params.kit.startsWith("visium") & params.expected_cells == null ){
+            throw new Exception("expected_cells should be provided for 10x kits other than Visium")
+        }
         """
         workflow-glue parse_kit_metadata from_cli \
             --kit_config kit_config.csv \
-            --kit_name "$params.kit_name" \
-            --kit_version $params.kit_version \
+            --kit "$params.kit" \
             --expected_cells $params.expected_cells \
+            --spaceranger_bam $params.spaceranger_bam \
+            --adapter_stats $params.adapter_stats \
             --sample_ids $sample_ids \
             --output merged.csv
         """
     }
+}
 
+process process_results {
+    // Generate a results.json using workflow.models. This is currently using to 
+    // send sample statuses to the report, but could be a full replacement for 
+    // prepare_report_data in the future.
+    label  "wf_common"
+    cpus 2
+    memory "4GB"
+    input:
+       tuple val(meta),
+             path('status_files/status*.json')
+    output:
+        path("sample_results.json")
+    script:
+    String metadata = new JsonBuilder(meta).toPrettyString()
+    """
+    echo '${metadata}' > metadata.json
+    workflow-glue process_results sample_results.json metadata.json status_files
+    """
+}
+
+process combine_results {
+   // Combine the per-sample JSON results 
+    label  "wf_common"
+    cpus 2
+    memory "4GB"
+    input:
+        path "jsons/sample_*.json"
+    output:
+        path("results.json")
+    script:
+    """
+    workflow-glue combine_results jsons results.json
+    """
 }
 
 
 process prepare_report_data {
     label "singlecell"
     cpus 1
-    memory "1 GB"
+    memory "8 GB"
     input:
         tuple val(meta),
               path('adapter_stats/stats*.json'),
               path('expression_stats/stats*.json'),
               path('white_list.txt'),
+              path('raw_gene_expression'),
               path('gene_mean_expression.tsv'),
               path('transcript_mean_expression.tsv'),
               path('mitochondrial_expression.tsv'),
-              path(umaps)
+              path('matrix_stats.tsv'),
+              path(umaps, stageAs: 'umaps/*'),
+              path('bamstats/bam_stats*.tsv'),
+              path(snv, stageAs: 'snv/*')
+        path genes_of_interest, stageAs: 'goi/*'
     output:
-        path "survival.tsv", emit: survival  // not meta.alias here, breaks collectFile()
-        path "${meta.alias}_umap", emit: umap_dir
+        // sample_id column added to survival.tsv and bm_stats.tsv no need for meta
+        path "survival.tsv", emit: survival
+        path "bam_stats.tsv", emit: bam_stats
+        path "${meta.alias}_expression", emit: expression_dir
 
     script:
-        opt_umap = umaps.name != 'OPTIONAL_FILE'
-        String hist_dir = "histogram_stats/${meta.alias}"
+        def has_umap = umaps.fileName.name != 'OPTIONAL_FILE'
+        def has_snv = snv.fileName.name != 'OPTIONAL_FILE'
+        def opt_goi = genes_of_interest.fileName.name != 'OPTIONAL_FILE' ? "--genes_of_interest $genes_of_interest.name" : ""
     """
-    workflow-glue prepare_report_data \
-        "${meta.alias}" adapter_stats expression_stats white_list.txt survival.tsv
-    
-    umd=${meta.alias}_umap
-    mkdir \$umd
 
-    if [ "$opt_umap" = true ]; then
+    # Make a directory to stick some expression related files per sample
+    expression_dir="${meta.alias}_expression"
+    mkdir \$expression_dir
+    echo \$expression_dir
+    workflow-glue prepare_report_data \
+        "${meta.alias}" bamstats expression_stats \
+        white_list.txt survival.tsv bam_stats.tsv raw_gene_expression \
+        matrix_stats.tsv ${meta.n_seqs} \
+        adapter_stats ${opt_goi}
+
+    if [ "$has_umap" = "true" ]; then
         echo "Adding umap data to sample directory"
         # Add data required for umap plotting into sample directory
-        mv *umap*.tsv \$umd
-        mv gene_mean_expression.tsv \$umd
-        mv transcript_mean_expression.tsv \$umd
-        mv mitochondrial_expression.tsv \$umd
+        mv umaps/*.tsv \$expression_dir
+        mv gene_mean_expression.tsv \$expression_dir
+        mv transcript_mean_expression.tsv \$expression_dir
+        mv mitochondrial_expression.tsv \$expression_dir
     else
         touch "\$umd"/OPTIONAL_FILE
+    fi
+
+    if [ "$has_snv" = "true" ]; then
+        echo "Adding snv data to sample directory"
+        mv snv/* \$expression_dir
     fi
     """
 }
@@ -168,8 +273,11 @@ process prepare_report_data {
 workflow pipeline {
     take:
         chunks
-        ref_genome_dir
-        umap_genes
+        ref_genome_fasta
+        ref_genome_idx
+        ref_genes_gtf
+        genes_of_interest
+        ctat_resource_dir
     main:
         // throw an exception for deprecated conda users
         if (workflow.profile.contains("conda")) {
@@ -178,63 +286,193 @@ workflow pipeline {
                 "please use --profile standard (Docker) " +
                 "or --profile singularity.")
         }
-        ref_genome_fasta = file("${params.ref_genome_dir}/fasta/genome.fa", checkIfExists: true)
-        ref_genome_idx = file("${params.ref_genome_dir}/fasta/genome.fa.fai", checkIfExists: true)
-        ref_genes_gtf = file("${params.ref_genome_dir}/genes/genes.gtf", checkIfExists: true)
         software_versions = getVersions()
         workflow_params = getParams()
 
         bc_longlist_dir = file("${projectDir}/data", checkIfExists: true)
+        if (params.kit == 'visium:v1'){
+            visium_non_hd_coords = file("${bc_longlist_dir}/visium-v1_coordinates.txt", checkIfExists: true)
+        }
+        else {
+             visium_non_hd_coords = OPTIONAL_FILE
+        }
 
-        preprocess(
-            chunks.map{meta, fastq, stats -> [meta, fastq]},
-            bc_longlist_dir,
-            ref_genome_fasta,
-            ref_genome_idx,
-            ref_genes_gtf)
+        if (!params.spaceranger_bam) {
+            preprocess(
+                chunks.map{meta, fastq, _stats -> [meta, fastq]},
+                bc_longlist_dir,
+                ref_genome_fasta,
+                ref_genes_gtf)
+            correct_10x_barcodes(
+                preprocess.out.read_tags,
+                preprocess.out.high_qual_bc_counts.groupTuple())
+            merged_bam = preprocess.out.merged_bam
+            chr_tags = correct_10x_barcodes.out.chr_tags
+        } else {
+            // If --spaceranger_bam, we already have a BAM spatial barcode and UMI
+            // tags. Currently dealing with single sample.
+            spaceranger_bam = spaceranger_ingress([
+                "input": params.spaceranger_bam,
+                "sample": params.sample,
+                "keep_unaligned": true,
+                "return_fastq": false,
+                "stats": false,
+                "per_read_stats": false])
 
-        process_bams(
-            preprocess.out.bam_sort,
-            preprocess.out.read_tags,
-            preprocess.out.high_qual_bc_counts.groupTuple(),
+            spaceranger_bam.count().map { n -> 
+                if ( n > 1 ){
+                    error "Multiple samples found. For spaceranger input," +
+                     "the workflow accepts only a single sample." } }
+            chunks.groupTuple().count().map { n -> 
+                if ( n > 1 ){
+                    error "Multiple samples found. For spaceranger input," +
+                     "the workflow accepts only a single sample." } }
+            
+            // Get the meta from the long read BAM for joining later.
+            // We only have a single sample, so don't need to worry about matching
+            // sample IDs
+            spaceranger_bam = spaceranger_bam.combine(chunks.groupTuple())
+                .map { _meta, bam, bai, _null, meta, _fastq, _stats -> [meta, bam, bai] }
+
+            spaceranger(
+                chunks.map{ meta, fastq, _stats -> [meta, fastq] },
+                spaceranger_bam,
+                ref_genome_fasta,
+                ref_genes_gtf)
+            chr_tags = spaceranger.out.chr_tags
+            merged_bam = spaceranger.out.merged_bam
+        }
+
+
+        assign_features_with_stringtie(
+            merged_bam,
+            chr_tags,
             ref_genes_gtf,
             ref_genome_fasta,
-            ref_genome_idx)
+            ref_genome_idx,
+        )
+
+        process_bams(
+            merged_bam,
+            assign_features_with_stringtie.out.feature_assignments,
+            assign_features_with_stringtie.out.annotation,
+            chr_tags,
+            assign_features_with_stringtie.out.read_to_transcript_map)
+
+        if (params.call_variants) {
+            snv(
+                process_bams.out.tagged_bam,
+                ref_genome_fasta,
+                ref_genome_idx)
+            top_snvs = snv.out.top_snvs
+        }
+        else {
+            top_snvs = process_bams.out.tagged_bam.map {meta, _bam, _bai -> [meta, OPTIONAL_FILE] }
+        }
+
+        if (params.call_fusions) {
+            fusions(
+                process_bams.out.tagged_bam.join(process_bams.out.final_read_tags),
+                ctat_resource_dir)
+            
+            fusion_summary = fusions.out.fusion_summary
+                .map {_meta, fusion_summary -> fusion_summary}
+                .flatten()
+                .collectFile(keepHeader:true, name: 'fusion_summary.tsv')
+            
+            fusion_read_summary = fusions.out.read_summary
+                .map {_meta, read_summary -> read_summary}
+                .flatten()
+                .collectFile(keepHeader:true, name: 'fusion_per_read_info.tsv')
+            
+            fusion_cell_summary = fusions.out.cell_summary
+                .map {_meta, cell_summary -> cell_summary}
+                .flatten()
+                .collectFile(keepHeader:true, name: 'fusion_per_sample_summary.tsv')
+            
+            fusion_data = fusion_summary
+                .concat(fusion_read_summary, fusion_cell_summary).collect()
+        }
+        else {
+            fusion_data = OPTIONAL_FILE
+            log.info("Skipping ctat fusion calling")
+        }
+
+        if (!params.spaceranger_bam) {
+            adapter_summary = preprocess.out.adapter_summary.groupTuple() // groupTuple?
+            bam_stats = preprocess.out.bam_stats.groupTuple()
+            whitelist = correct_10x_barcodes.out.white_list
+            hq_barcode_counts = correct_10x_barcodes.out.hq_bc_counts
+        } else {
+            adapter_summary = spaceranger.out.adapter_summary.groupTuple()
+            bam_stats = spaceranger.out.bam_stats.groupTuple()
+            whitelist = spaceranger.out.barcode_list
+            // Note: for visium HD, these are all the barcodes called by spaceranger
+            hq_barcode_counts = spaceranger.out.barcode_counts
+        }
+
+        expression_stats = process_bams.out.expression_stats
+            .groupTuple()
+            .map{meta, _chrs, stats -> [meta, stats]}
+
+        
+        if (params.spaceranger_bam) {
+            expression_matrix = process_bams.out.gene_expression_8um
+        }
+        else {
+            expression_matrix = process_bams.out.raw_gene_expression
+        }
 
         prepare_report_data(
-            preprocess.out.adapter_summary.groupTuple()
-            .join(process_bams.out.expression_stats
-                .groupTuple()
-                .map{meta, chrs, stats -> [meta, stats]})
-            .join(process_bams.out.white_list)
-            .join(process_bams.out.gene_mean_expression)
-            .join(process_bams.out.transcript_mean_expression)
-            .join(process_bams.out.mitochondrial_expression)
-            .join(process_bams.out.umap_matrices))
+            adapter_summary
+                .join(expression_stats)
+                .join(whitelist)
+                .join(expression_matrix)
+                .join(process_bams.out.gene_mean_expression)
+                .join(process_bams.out.transcript_mean_expression)
+                .join(process_bams.out.mitochondrial_expression)
+                .join(process_bams.out.matrix_stats)
+                .join(process_bams.out.umap_matrices)
+                .join(bam_stats)
+                .join(top_snvs),
+            genes_of_interest)
 
         // Get the metadata and stats for the report
         chunks
             .groupTuple()
-            .multiMap{ meta, chunk, stats ->
+            .multiMap{ meta, _chunk, stats ->
                 meta: meta
                 stats: stats[0]
             }.set { for_report }
         metadata = for_report.meta.collect()
         stats = for_report.stats.collect()
-
+        
+        // Aggregate status files from the various processes (currently just process_bams)
+        pr_status = process_bams.out.status
+            .groupTuple()
+        
+        results = combine_results(process_results(pr_status).collect())
+        
         // note the cheeky little .collectFile() here to concatenate the
         // read survival stats from different samples into a single file
         makeReport(
             metadata,
+            results,
             software_versions,
             workflow_params,
             stats,
             prepare_report_data.out.survival
                 .collectFile(keepHeader:true),
-            prepare_report_data.out.umap_dir.collect(),
-            process_bams.out.plots,
-            umap_genes,
-            workflow.manifest.version)
+            prepare_report_data.out.expression_dir.collect(),
+            genes_of_interest,
+            workflow.manifest.version,
+            process_bams.out.seq_saturation,
+            process_bams.out.gene_saturation,
+            hq_barcode_counts,
+            prepare_report_data.out.bam_stats
+                .collectFile(keepHeader:true),
+            fusion_data,
+            visium_non_hd_coords)
 }
 
 
@@ -242,34 +480,109 @@ workflow pipeline {
 WorkflowMain.initialise(workflow, params, log)
 workflow {
 
-    Pinguscript.ping_start(nextflow, workflow, params)
-    ref_genome_dir = file(params.ref_genome_dir, checkIfExists: true)
+    Map colors = NfcoreTemplate.logColours(params.monochrome_logs)
 
-    if (params.umap_plot_genes){
-        umap_genes = file(params.umap_plot_genes, checkIfExists: true)
-    }else{
-        umap_genes = file("${projectDir}/umap_plot_genes.csv", checkIfExists: true)
+    Pinguscript.ping_start(nextflow, workflow, params)
+
+    if (params.ref_genome_dir) {
+        def fasta_gz = file("${params.ref_genome_dir}/fasta/genome.fa.gz", checkIfExists: false)
+        def fasta = file("${params.ref_genome_dir}/fasta/genome.fa", checkIfExists: false)
+
+        if (fasta_gz.exists()) {
+            uncompress_ref(fasta_gz)
+            ref_genome_fasta = uncompress_ref.out.fasta
+            ref_genome_idx = uncompress_ref.out.index
+
+        } else if (fasta.exists()) {
+            ref_genome_fasta = fasta
+            ref_genome_idx = make_fasta_index(fasta)
+        } else {
+            error "Reference genome FASTA not found (.fa or .fa.gz)"
+        }
+
+        def gtf_gz = file("${params.ref_genome_dir}/genes/genes.gtf.gz", checkIfExists: false)
+        def gtf = file("${params.ref_genome_dir}/genes/genes.gtf", checkIfExists: false)
+
+        if (gtf_gz.exists()) {
+            ref_genes_gtf = gtf_gz
+        } else if (gtf.exists()) {
+            ref_genes_gtf = gtf
+        } else {
+            error "GTF file not found (.gtf or .gtf.gz)"
+        }
+    }
+    else if (params.epi2me_resource_bundle) {
+        url = params.resource_bundles.get(params.epi2me_resource_bundle)['10x']
+        log.info("Downloading 10x reference genome from $url to $params.store_dir")
+        name = channel.of('10x')
+        ref = get_10x_data(name, url)
+        ref_genome_fasta = ref.genome_fasta.first()
+        ref_genome_idx = ref.genome_idx.first()
+        ref_genes_gtf = ref.genes_gtf.first()
+        get_10x_data.out.genome_fasta
+            .subscribe onComplete: {log.info(colors.green + 'Downloaded 10x resources!' + colors.reset)}
+    }
+
+    if (params.call_fusions){
+        if (params.ctat_resources) {
+            ctat_resource_dir = file(params.ctat_resources, checkIfExists: true)
+        }
+        else if (params.epi2me_resource_bundle) {
+            url = params.resource_bundles.get(params.epi2me_resource_bundle)['ctat-lr-fusion']
+            log.info("Downloading ctat-LR-fusion resources from $url to $params.store_dir")
+            name = channel.of('ctat_resources')
+            ref = get_ctat_data(name, url)
+            ctat_resource_dir = ref.resource_dir.first()
+            get_ctat_data.out.resource_dir
+                .subscribe onComplete: {log.info(colors.green + "Downloaded ctat-LR-fusion resources!" + colors.reset)}
+        }
+        else {
+            error "ctat-LR-fusion resources not provided. Please provide a ctat-LR-fusion resource bundle with --ctat_resources or --epi2me_resource_bundle=true"
+        }
+    }else {   
+         ctat_resource_dir = OPTIONAL_FILE
+    }
+
+    if (params.genes_of_interest){
+        genes_of_interest = file(params.genes_of_interest, checkIfExists: true)
+    } else {
+        genes_of_interest = OPTIONAL_FILE
     }
 
     if (params.kit_config){
         kit_configs_file = file(params.kit_config, checkIfExists: true)
-    }else{
+    } else {
         kit_configs_file = file("${projectDir}/kit_configs.csv", checkIfExists: true)
     }
 
-    fastq = file(params.fastq, type: "file")
+    ArrayList fastcat_extra_args = []
+    if (params.min_read_qual) {
+        fastcat_extra_args << "-q $params.min_read_qual"
+    }
 
-    samples = fastq_ingress([
-            "input":params.fastq,
-            "sample":params.sample,
-            "sample_sheet":params.sample_sheet,
-            "fastq_chunk": params.fastq_chunk,
-            "stats": true,
-            "per_read_stats": false])
-
+    if (params.fastq) {
+        samples = fastq_ingress([
+                "input":params.fastq,
+                "sample":params.sample,
+                "sample_sheet":params.sample_sheet,
+                "fastq_chunk": params.fastq_chunk,
+                "stats": true,
+                "per_read_stats": false,
+                "fastcat_extra_args": fastcat_extra_args.join(" ")])
+    } else {
+        samples = xam_ingress([
+                "input": params.bam,
+                "sample": params.sample,
+                "sample_sheet":params.sample_sheet,
+                "fastq_chunk": params.fastq_chunk,
+                "keep_unaligned": true,
+                "return_fastq": true,
+                "stats": true,
+                "per_read_stats": false,
+                "fastcat_extra_args": fastcat_extra_args.join(" ")])
+    }
 
     if (!params.single_cell_sample_sheet) {
-
         sc_sample_sheet = file("$projectDir/data/OPTIONAL_FILE")
     } else {
         // Read single_cell_sample_sheet
@@ -293,11 +606,15 @@ workflow {
             def new_meta = meta.clone()
             new_meta.remove('group_index')
             [new_meta, chunk, stats]}
+    
 
     pipeline(
         sample_and_kit_meta,
-        ref_genome_dir,
-        umap_genes)
+        ref_genome_fasta,
+        ref_genome_idx,
+        ref_genes_gtf,
+        genes_of_interest,
+        ctat_resource_dir)
 }
 
 workflow.onComplete {

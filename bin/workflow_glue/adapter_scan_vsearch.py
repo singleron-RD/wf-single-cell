@@ -50,7 +50,7 @@ def argparser():
         help="Specify either the 10X 3' gene expression kit (3prime), the 5' \
         gene expression kit (5prime), or the multiome kit (multiome) This \
         determines which adapter sequences to search for in the reads.",
-        default="3prime", choices=['3prime', '5prime', 'multiome'])
+        default="3prime", choices=['3prime', '5prime', 'multiome', 'visium'])
 
     parser.add_argument(
         "--min_adapter_id", type=float, default=0.7,
@@ -321,7 +321,7 @@ class AdapterSummary(StatsSummary):
     """Summary dictionary for storing adapter configuration summaries."""
 
     fields = {
-        "reads", "full_length", "stranded", "plus", "minus",
+        "subreads", "full_length", "stranded", "plus", "minus",
         "single_adapter1", "double_adapter1",
         "single_adapter2", "double_adapter2",
         "no_adapters", "other"}
@@ -330,7 +330,7 @@ class AdapterSummary(StatsSummary):
     def from_pandas(cls, df):
         """Create an instance from a pandas dataframe."""
         stats = dict()
-        stats["reads"] = len(df)
+        stats["subreads"] = len(df)
         stats["full_length"] = len(df[df.fl].index)
         stats["stranded"] = len(df[df['orig_strand'] != '*'])
         stats["plus"] = len(df[df['orig_strand'] == '+'])
@@ -374,7 +374,7 @@ def create_stranded_reads(fastq, read_info, kit, fl_only):
                     if any([
                         (subread["orig_strand"] == "-" and kit == '5prime'),
                         (subread["orig_strand"] == '+' and kit in [
-                            '3prime', 'multiome'])
+                            '3prime', 'multiome', 'visium'])
                     ]):
                         # Do any necessary stranding
                         #

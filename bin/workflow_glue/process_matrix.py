@@ -4,11 +4,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, TruncatedSVD
 import umap
-
-from .expression_matrix import ExpressionMatrix  # noqa: ABS101
-from .util import get_named_logger, wf_parser  # noqa: ABS101
+from workflow_glue.expression_matrix import ExpressionMatrix
+from workflow_glue.sc_util import StatusRecorder
+from workflow_glue.util import get_named_logger, wf_parser
 
 
 def argparser():
@@ -32,7 +32,18 @@ def argparser():
         help="Output TSV for per-cell mean expression level.")
     parser.add_argument(
         "--per_cell_mito", default="expression.mito-per-cell.tsv", type=Path,
-        help="Output TSV for per-cell mean expression level.")
+        help="Output TSV for per-cell mean mito expression level.")
+    parser.add_argument(
+        "--stats", type=Path, help="Output path for stats TSV.")
+    parser.add_argument(
+        "--seq_saturation", type=Path, default=None,
+        help="Output path for saturation summary TSV.")
+    parser.add_argument(
+        "--gene_saturation", type=Path, default=None,
+        help="Output path for saturation summary TSV.")
+    parser.add_argument(
+        "--sample",
+        help="Sample ID of the data.")
     parser.add_argument(
         "--text", action="store_true", help=argparse.SUPPRESS)
 
@@ -78,6 +89,11 @@ def argparser():
         "--pcn", type=int, default=100,
         help="Number of principal components to generate prior to UMAP")
     grp.add_argument(
+        "--max_umap_cells", type=int, default=30000,
+        help="Maximum number of cells/spots to use for UMAP. "
+             "If the matrix has more cells, a random subset is used."
+             "After this all cells are projected into the UMAP space.")
+    grp.add_argument(
         "--dimensions", type=int, default=2,
         help="Number of dimensions in UMAP embedding")
     grp.add_argument(
@@ -90,24 +106,156 @@ def argparser():
     return parser
 
 
+def make_umaps(
+        matrix, pcn, replicates, max_umap_cells,
+        n_neighbors, min_dist, umap_tsv, feature, status_logger):
+    """Generate UMAPs from a matrix.
+
+    param matrix: ExpressionMatrix object
+    param pcn: number of principal components to generate prior to UMAP
+    param replicates: number of UMAP replicates to perform
+    param max_umap_cells: maximum number of cells/spots to use for UMAP
+    param n_neighbors: UMAP n_neighbors parameter
+    param min_dist: UMAP min_dist parameter
+    param umap_tsv: output TSV file path. If replicates > 1 files
+    param sample: sample ID
+    param feature: feature type (gene or transcript)
+    param status_logger: StatusRecorder object
+
+    """
+    logger = get_named_logger('UMAP')
+    logger.info('Constructing count matrices')
+
+    min_cells_for_umap = 4
+
+    if len(matrix.cells) < min_cells_for_umap:
+        # Write empty file
+        status_logger.add(
+            f"{feature}_umap_status", f"{feature} UMAP cannot be generated "
+            " with matrix containing fewer than 4 cells.")
+        open(umap_tsv, 'w').close()
+        return
+
+    pcn = min(pcn, *matrix._matrix.shape)
+    if matrix.sparse:
+        logger.info("Preprocessing sparse matrix using TruncatedSVD.")
+        model = TruncatedSVD(n_components=pcn)
+    else:
+        logger.info("Preprocessing dense matrix using PCA.")
+        model = PCA(n_components=pcn, copy=False)
+
+    # note, we're going to do things in place so ExpressionMatrix will
+    # become modified (trimmed on feature axis, and transposed)
+    mat = matrix._matrix
+    mat = model.fit_transform(mat.transpose())
+
+    logger.info(f"PCA output matrix has shape: {mat.shape}")
+    # as we've done PCS in place, we should update the features
+    matrix._features = np.array([f"pca_{i}" for i in range(pcn)])
+    matrix._s_features = np.arange(pcn)
+
+    for replicate in range(replicates):
+        logger.info(f"Performing UMAP replicate {replicate + 1}.")
+        if mat.shape[0] > max_umap_cells:  # cells is now first dim ;)
+            logger.warning(
+                f"Downsampling to {max_umap_cells} cells/spots for UMAP. ")
+            rng = np.random.default_rng(seed=replicate)
+            subset_indices = rng.choice(
+                mat.shape[0], size=max_umap_cells, replace=False)
+            fit_data = mat[subset_indices, :]
+        else:
+            fit_data = mat
+
+        mapper = umap.UMAP(
+            n_neighbors=n_neighbors,
+            min_dist=min_dist,
+            n_components=2,
+            metric='euclidean')
+        logger.info("Fitting UMAP model.")
+        mapper.fit(fit_data)
+        logger.info("Transforming matrix to UMAP embedding.")
+        embedding = mapper.transform(mat)
+        logger.info(f"UMAP Embedding has shape: {embedding.shape}")
+
+        # would be nice to avoid a copy here, but the array is fairly small
+        fname = str(umap_tsv).replace('REPEAT', str(replicate))
+        logger.info(f"Writing UMAP embedding {fname}.")
+        cols = ["D1", "D2"]
+        out = pd.DataFrame(embedding, columns=cols, index=matrix.tcells)
+        out.to_csv(fname, sep="\t", index=True, index_label="CB")
+        status_logger.add(f'{feature}_umap_replicate_path', fname)
+    status_logger.add(f"{feature}_umap_status", 'OK')
+    matrix._matrix = mat.transpose()  # undo the PCA transpose
+
+
 def main(args):
     """Make feature x cell, UMI-deduplicated, counts matrix."""
     logger = get_named_logger('AggreMatrix')
     logger.info('Constructing count matrices')
+
+    status = StatusRecorder(args.sample, 'status.json')
 
     # converting to float on fly means we can save a copy when normalizing
     try:
         matrix = ExpressionMatrix.aggregate_tags(args.input, args.feature, dtype=float)
     except UnicodeDecodeError:
         matrix = ExpressionMatrix.aggregate_hdfs(args.input, dtype=float)
-    logger.info("Removing unknown features.")
-    matrix.remove_unknown()
 
+    # Sequencing saturation can be calculated before binning,
+    # as it reflects a property of the bulk data independent of individual cells.
+    if args.seq_saturation:
+        sat_results = matrix.saturation.saturation_results
+        sat_results.assign(sample=args.sample).to_csv(
+            args.seq_saturation, sep='\t', index=False)
+
+    logger.info("Removing unknown features.")
+    if len(matrix.cells) == 0:
+        raise ValueError("""The expression matrix contains no cells.
+            This may indicate an issue with data quality or volume.
+            Incorrectly specified 10x kits/versions and reference data can also lead to
+            to removal of all data at this point.""")
+
+    # Begin filtering
+    matrix.remove_unknown()
     logger.info("Writing raw counts to file.")
-    if args.text:
-        matrix.to_tsv(args.raw, args.feature)
+
+    if matrix.is_visium_hd:
+        # Create a new outpath for the unbinned data
+        outpath_2um = Path(f"{args.raw}_2um")
+        matrix_outpath = Path(f"{args.raw}_8um")
+        logger.info("Writing raw 2um counts to file.")
+        if args.text:
+            matrix.to_tsv(str(outpath_2um), args.feature)
+        else:
+            matrix.to_mex(str(outpath_2um), dtype=int)
+        # Bin the data. Raw 2um data can have very low counts per spot, also
+        # it's a pain to visualise.
+        matrix.bin_cells_by_coordinates(bin_size=4, inplace=True)
     else:
-        matrix.to_mex(args.raw, dtype=int)
+        matrix_outpath = args.raw
+
+    # Calculate per-cell/spot summaries after any binning of the data.
+    if args.gene_saturation:
+        df_genes_per_cell = matrix.saturation_statistics
+        (
+            df_genes_per_cell
+            .assign(sample=args.sample)
+            .to_csv(args.gene_saturation, sep='\t', index=False)
+        )
+
+    stats = {
+        'median_umis_per_cell': matrix.median_counts,
+        'median_genes_per_cell': matrix.median_features_per_cell
+    }
+
+    with open(args.stats, 'w') as fh:
+        for k, v in stats.items():
+            fh.write(f'{k}\t{v}\n')
+
+    if args.text:
+        matrix.to_tsv(matrix_outpath, args.feature)
+    else:
+        matrix.to_mex(matrix_outpath, dtype=int)
 
     if args.enable_filtering:
         logger.info("Filtering, normalizing and log-transforming matrix.")
@@ -135,34 +283,10 @@ def main(args):
         matrix.mean_expression, matrix.tcells, ['mean_expression'], index_name='CB')
 
     if args.enable_umap:
-        # note, we're going to do things in place so ExpressionMatrix will
-        # become modified (trimmed on feature axis, and transposed)
-        mat = matrix._matrix
-        pcn = min(args.pcn, *mat.shape)
-        matrix._features = np.array([f"pca_{i}" for i in range(pcn)])
         logger.info(f"Performing PCA on matrix of shape: {matrix.matrix.shape}")
-        model = PCA(n_components=pcn, copy=False)
-        mat = model.fit_transform(mat.transpose())  # warning!
-        logger.info(f"PCA output matrix has shape: {mat.shape}")
-
-        for replicate in range(args.replicates):
-            logger.info(f"Performing UMAP replicate {replicate + 1}.")
-            mapper = umap.UMAP(
-                n_neighbors=args.n_neighbors,
-                min_dist=args.min_dist,
-                n_components=args.dimensions,
-                verbose=0)
-            embedding = mapper.fit_transform(mat)
-            logger.info(f"UMAP Embedding has shape: {embedding.shape}")
-
-            # would be nice to avoid a copy here, but the array is fairly small
-            fname = args.umap_tsv
-            if args.replicates > 1:
-                fname = args.umap_tsv.with_suffix(f".{replicate}{args.umap_tsv.suffix}")
-            logger.info(f"Writing UMAP embedding {fname}.")
-            cols = [f"D{i+1}" for i in range(args.dimensions)]
-            out = pd.DataFrame(embedding, columns=cols, index=matrix.tcells)
-            out.to_csv(fname, sep="\t", index=True, index_label="CB")
-        matrix._matrix = mat.transpose()  # undo the PCA transpose
-
+        make_umaps(
+            matrix, args.pcn, args.replicates, args.max_umap_cells,
+            args.n_neighbors, args.min_dist, args.umap_tsv, args.feature,
+            status)
+    status.write_json()
     logger.info("Done.")

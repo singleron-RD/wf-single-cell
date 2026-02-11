@@ -8,9 +8,8 @@
 nextflow run singleron-RD/wf-single-cell \
     --fastq {fastq.gz} \
     --ref_genome_dir {ref_genome_dir} \
-    --kit_name '3prime' \
-    --kit_version 'GEXSCOPE-V2' \
-    --expected_cells 5000 \
+    --kit'3prime:GEXSCOPE-V2' \
+    --expected_cells 10000 \
     --barcode_max_ed 5 \
     -profile standard \
     -resume \
@@ -18,7 +17,7 @@ nextflow run singleron-RD/wf-single-cell \
 
 # Single cell workflow
 
-Identification of cell- and UMI barcodes from single-cell sequencing.
+Cell barcode & UMI identification from single-cell sequencing data.
 
 ## Introduction
 
@@ -35,7 +34,19 @@ In brief, the workflow does the following:
 - Tagging BAM files with cell barcodes and UMIs.
 - Calculation of library saturation.
 
-The [BLAZE](https://github.com/shimlab/BLAZE) preprint provided useful benchmarking of the original sockeye implementation.
+<figure>
+<img src="docs/images/wf-single-cell.svg" alt="wf-single-cell overview schematic."/>
+<figcaption>Schematic depicting wf-single-cell workflow.</figcaption>
+</figure>
+
+This workflow supports the following 10x kits:
++ 3': v2/v3 and v4 (GEM-X)
++ 5': v1/v2 and v3 (GEM-X)
++ multiome (gene expression only): v1 
++ visium 3': v1 
++ visium HD 3': v1
+
+The [BLAZE](https://github.com/shimlab/BLAZE) preprint provided useful benchmarking of the original sockeye implementation. 
 This assisted in the selection of appropriate thresholds for cell cut-off and for defining the limits of the gene x cell matrix.
 
 The isoform selection procedure used in this workflow was adapted from that found in the [FLAMES](https://github.com/LuyiTian/FLAMES)
@@ -50,7 +61,7 @@ Recommended requirements:
 
 Minimum requirements:
 
-+ CPUs = 8
++ CPUs = 32
 + Memory = 32GB
 
 Approximate run time: Approximately 8h for 120M reads with the recommended requirements.
@@ -62,31 +73,43 @@ ARM processor support: False
 
 ## Install and run
 
-<!---Nextflow text remains the same across workflows, update example cmd and demo data sections.--->
 
-These are instructions to install and run the workflow on command line. You can also access the workflow via the [EPI2ME application](https://labs.epi2me.io/downloads/).
+These are instructions to install and run the workflow on command line.
+You can also access the workflow via the
+[EPI2ME Desktop application](https://labs.epi2me.io/downloads/).
 
-The workflow uses [Nextflow](https://www.nextflow.io/) to manage compute and software resources, therefore nextflow will need to be installed before attempting to run the workflow.
+The workflow uses [Nextflow](https://www.nextflow.io/) to manage
+compute and software resources,
+therefore Nextflow will need to be
+installed before attempting to run the workflow.
 
-The workflow can currently be run using either [Docker](https://www.docker.com/products/docker-desktop) or
-[Singularity](https://docs.sylabs.io/guides/3.0/user-guide/index.html) to provide isolation of
-the required software. Both methods are automated out-of-the-box provided
-either docker or singularity is installed. This is controlled by the [`-profile`](https://www.nextflow.io/docs/latest/config.html#config-profiles) parameter as exemplified below.
+The workflow can currently be run using either
+[Docker](https://docs.docker.com/get-started/)
+or [Singularity](https://docs.sylabs.io/guides/3.0/user-guide/index.html)
+to provide isolation of the required software.
+Both methods are automated out-of-the-box provided
+either Docker or Singularity is installed.
+This is controlled by the
+[`-profile`](https://www.nextflow.io/docs/latest/config.html#config-profiles)
+parameter as exemplified below.
 
-It is not required to clone or download the git repository in order to run the workflow.
-More information on running EPI2ME workflows can be found on our [website](https://labs.epi2me.io/wfindex).
+It is not required to clone or download the git repository
+in order to run the workflow.
+More information on running EPI2ME workflows can
+be found on our [website](https://labs.epi2me.io/wfindex).
 
-The following command can be used to obtain the workflow. This will pull the repository in to the assets folder of nextflow and provide a list of all parameters available for the workflow as well as an example command:
+The following command can be used to obtain the workflow.
+This will pull the repository in to the assets folder of
+Nextflow and provide a list of all parameters
+available for the workflow as well as an example command:
 
 ```
-nextflow run singleron-RD/wf-single-cell –help
+nextflow run epi2me-labs/wf-single-cell --help
 ```
-
-A demo dataset is provided for testing of the workflow. It can be downloaded using:
-
+To update a workflow to the latest version on the command line use
+the following command:
 ```
-wget https://ont-exd-int-s3-euwst1-epi2me-labs.s3.amazonaws.com/wf-single-cell/wf-single-cell-demo.tar.gz \
-    && tar -xzvf wf-single-cell-demo.tar.gz
+nextflow pull epi2me-labs/wf-single-cell
 ```
 
 The workflow can be run with the demo data using:
@@ -117,15 +140,17 @@ This workflow is designed to take input sequences that have been produced from [
 
 Find related protocols in the [Nanopore community](https://community.nanoporetech.com/docs/).
 
-- https://community.nanoporetech.com/docs/prepare/library_prep_protocols/single-cell-transcriptomics-10x/v/sst_v9148_v111_revb_12jan2022
++ [Library prep and sequencing protocol for the 10x 5' kit](https://community.nanoporetech.com/docs/prepare/library_prep_protocols/ligation-sequencing-v14-single-cell-transcriptomics-with-5-cdna/v/sst_9204_v114_revd_06mar2024)
++ [Library prep and sequencing protocol for the 10x 3' kit](https://community.nanoporetech.com/docs/prepare/library_prep_protocols/single-cell-transcriptomics-with-cdna-prepared-using-10x/v/sst_9198_v114_reve_06dec2023)
+
+
 
 ## Input example
 
 <!---Example of input directory structure, delete and edit as appropriate per workflow.--->
+This workflow accepts either FASTQ or BAM files as input.
 
-This workflow accepts only FASTQ files as input.
-
-The FASTQ input parameters for this workflow accept one of three cases: (i) the path to a single FASTQ file; (ii) the path to a top-level directory containing FASTQ files; (iii) the path to a directory containing one level of sub-directories which in turn contain FASTQ files. In the first and second cases (i and ii), a sample name can be supplied with `--sample`. In the last case (iii), the data is assumed to be multiplexed with the names of the sub-directories as barcodes. In this case, a sample sheet can be provided with `--sample_sheet`.
+The FASTQ or BAM input parameters for this workflow accept one of three cases: (i) the path to a single FASTQ or BAM file; (ii) the path to a top-level directory containing FASTQ or BAM files; (iii) the path to a directory containing one level of sub-directories which in turn contain FASTQ or BAM files. In the first and second cases (i and ii), a sample name can be supplied with `--sample`. In the last case (iii), the data is assumed to be multiplexed with the names of the sub-directories as barcodes. In this case, a sample sheet can be provided with `--sample_sheet`.
 
 ```
 (i)                     (ii)                 (iii)
@@ -140,84 +165,6 @@ input_reads.fastq   ─── input_directory  ─── input_directory
                                              └── barcode03
                                               └── reads0.fastq
 ```
-
-## Input parameters
-
-### Input Options
-
-| Nextflow parameter name  | Type | Description | Help | Default |
-|--------------------------|------|-------------|------|---------|
-| fastq | string | FASTQ files to use in the analysis. | This accepts one of three cases: (i) the path to a single FASTQ file; (ii) the path to a top-level directory containing FASTQ files; (iii) the path to a directory containing one level of sub-directories which in turn contain FASTQ files. In the first and second case, a sample name can be supplied with `--sample`. In the last case, the data is assumed to be multiplexed with the names of the sub-directories as barcodes. In this case, a sample sheet can be provided with `--sample_sheet`. |  |
-| ref_genome_dir | string | The path to the 10x reference directory | Human reference data can be downloaded from 10x [here](https://cf.10xgenomics.com/supp/cell-exp/refdata-gex-GRCh38-2020-A.tar.gz). Instructions for preparing reference data can be found [here](https://www.10xgenomics.com/support/software/cell-ranger/tutorials/cr-tutorial-mr#overview) |  |
-| kit_name | string | 10x kit name | If `single_cell_sample_sheet` is not defined, kit_name is applied to all samples. This parameter is ignored if `single_cell_sample_sheet` is supplied. | 3prime |
-| kit_version | string | 10x kit version | 10x kits can be released with different versions, each requiring a specific whitelist that is looked-up by the workflow. If `single_cell_sample_sheet` is not defined, kit_version is applied to all samples. This parameter is ignored if `single_cell_sample_sheet` is supplied. 3prime kit options: [v2, v3]. For 5prime and multiome kits only `v1` is available. | v3 |
-| expected_cells | integer | Number of expected cells in the sample. | The number of expected cells. If `single_cell_sample_sheet` is not defined, `expected_cells` is applied to all samples. This parameter is ignored if `single_cell_sample_sheet` is supplied. | 500 |
-| full_length_only | boolean | Only process full length reads. | If set to true, only process reads or subreads that are classified as full length (read segments flanked by compatible adapters in the expected orientation). | True |
-
-
-### Sample Options
-
-| Nextflow parameter name  | Type   | Description                                                                                                                                                                                                                 | Help                                                                                                                                                                                                                                                                                                                                                                                        | Default |
-| ------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| single_cell_sample_sheet | string | An optional CSV file used to assign library metadata to the different samples. If all samples have the same library metadata, this can be supplied instead by using the parameters (kit_name, kit_version, expected cells). | Columns should be: [sample_id, kit_name, kit_version, exp_cells]. This must not be confused with the MinKNOW sample_sheet. `sample_id` should correspond to `sample_name` which is defined either in the `sample_sheet`, given by the `sample` parameter (for single sample runs) or if no `sample_sheet` or `sample` is given, is derived from the folder name containing the FASTQ files. |         |
-| sample_sheet             | string | A CSV file used to map barcodes to sample aliases. The sample sheet can be provided when the input data is a directory containing sub-directories with FASTQ files.                                                         | The sample sheet is a CSV file with, minimally, columns named `barcode` and `alias`. Extra columns are allowed. A `type` column is required for certain workflows and should have the following values; `test_sample`, `positive_control`, `negative_control`, `no_template_control`.                                                                                                       |         |
-| sample                   | string | A single sample name for non-multiplexed data. Permissible if passing a single .fastq(.gz) file or directory of .fastq(.gz) files.                                                                                          |                                                                                                                                                                                                                                                                                                                                                                                             |         |
-
-### Output Options
-
-| Nextflow parameter name  | Type | Description | Help | Default |
-|--------------------------|------|-------------|------|---------|
-| out_dir | string | Directory for output of all workflow results. |  | output |
-
-
-### Advanced options
-
-| Nextflow parameter name  | Type | Description | Help | Default |
-|--------------------------|------|-------------|------|---------|
-| kit_config | string | A file defining the configurations associated with the various supported 10x kits. | A CSV file is expected with the following headers [kit_name, kit_version, barcode_length, umi_length]. If not specified, a default `kit_configs.csv` (found in the project directory root) will be used. This parameter does not typically need be changed. |  |
-| threads | integer | Number of CPU threads to use in resource intensive processes. | The total CPU resource used by the workflow is constrained by the executor configuration. | 8 |
-| fastq_chunk | integer | Sets the maximum number of reads per chunk for the initial processing of reads. | Controls batching of reads for processing. | 1000000 |
-| barcode_adapter1_suff_length | integer | Suffix length of the read1 adapter to use in creating the probe sequence for identifying barcode/UMI bases. | For example, specifying 12 would mean that the last 12 bases of the specified read1 sequence will be included in the probe sequence. | 10 |
-| barcode_min_quality | integer | Minimum allowed nucleotide-level quality score in the extracted/uncorrected barcode sequence. | Values equal or higher to this this will be considered 'high-quality' and used for generating the barcode whitelist. | 15 |
-| barcode_max_ed | integer | Maximum allowable edit distance between uncorrected barcode and the best matching corrected barcode from the sample whitelist. | Barcodes are corrected by searching from a list of barcodes known to exist in the dataset. A maximum edit distance of 2 between query and whitelist barcode is recommended. | 2 |
-| barcode_min_ed_diff | integer | Minimum allowable edit distance difference between whitelist barcode candidates. | If there is more than one candidate barcode found in the whitelist, the edit distance difference of the top hit and second best hits (in relation to the uncorrected barcode) must be at least this value to be able to assign a barcode. If the edit distance difference is less than this, it is assumed that barcode identity is amiguous, and the read is not tagged with a corrected barcode. | 2 |
-| gene_assigns_minqv | integer | Minimum MAPQ score allowed for a read to be assigned to a gene. |  | 30 |
-| matrix_min_genes | integer | Filter cells from the gene expression matrix if they contain fewer than <matrix_min_genes> genes. |  | 200 |
-| matrix_min_cells | integer | Filter genes from the gene expression matrix that are observed in fewer than <matrix_min_cells> cells. |  | 3 |
-| matrix_max_mito | integer | Filter cells from the gene expression matrix if more than <matrix_max_mito> percent of UMI counts come from mitochondrial genes. |  | 20 |
-| matrix_norm_count | integer | Normalize expression matrix to <matrix_norm_count> counts per cell. |  | 10000 |
-| umap_plot_genes | string | File containing a list of gene symbols (one symbol per line) to annotate with expression values in the UMAP projections. |  |  |
-| mito_prefix | string | Gene name prefix to identify for mitochondrial genes. | Parts of the workflow analyse mitochondrial genes separately. These genes are identified by searching for a gene name prefix. Human mitochondrial genes can be identified with prefix 'MT-' and mouse genes with prefix 'mt-'. If the reference genome contains data from multiple organisms with different nomenclature, multiple prefixes can be supplied like so: 'MT-,mt-' | MT- |
-| umap_n_repeats | integer | Number of UMAP projection to repeat for each dataset. | The UMAP algorithm contains elements of randomness that can mislead users into seeing associations between cells that are not meaningful. It is recommended to view multiple plots generated with the same parameters and check that any observed structure is consistent across runs. | 3 |
-| stringtie_opts | string | StringTie options for transcriptome assembly. | StringTie option string can be supplied at the command line as in this example: `--stringtie_opts="-c 5 -m 100 "`. StringTie options can be found here: http://ccb.jhu.edu/software/stringtie/index.shtml?t=manual. The default option (-c 2) ensures that only transcripts with a coverage of 2 or higher are included in the generated transcriptome | -c 2 |
-
-
-
-
-
-
-## Outputs
-
-Output files may be aggregated including information for all samples or provided per sample. Per-sample files will be prefixed with respective aliases and represented below as {{ alias }}.
-
-| Title | File path | Description | Per sample or aggregated |
-|-------|-----------|-------------|--------------------------|
-| workflow report | ./wf-single-cell-report.html | Report for all samples | aggregated |
-| Concatenated sequence data | ./fastq_ingress_results/reads/{{ alias }}.fastq.gz | Per sample reads concatenated in a single FASTQ file. | per-sample |
-| Results summaries | ./{{ alias }}/config_stats.json | Results summaries including adapter configuration numbers. | per-sample |
-| Gene expression counts | ./{{ alias }}/gene_expression.counts.tsv | Gene x cell expression matrix. | per-sample |
-| Processed gene expression counts | ./{{ alias }}/gene_expression.processed.tsv | Filtered and normalized gene x cell expression matrix. | per-sample |
-| Transcript expression counts | ./{{ alias }}/transcript_expression.counts.tsv | Transcript x cell expression matrix. | per-sample |
-| Processed transcript expression counts | ./{{ alias }}/transcript_expression.processed.tsv | Filtered and normalized transcript x cell expression matrix. | per-sample |
-| Mitochondrial expression levels | ./{{ alias }}/gene_expression.mito.tsv | Per cell mitochondrial gene expression as percentage total of total gene expression. | per-sample |
-| Read summary | ./{{ alias }}/read_summary.tsv | Per read assigned barcodes UMIs genes and transcripts. | per-sample |
-| Barcode counts | ./{{ alias }}/uncorrected_bc_counts.tsv | The counts of each barcode present in the sequenced library (only barcodes that have a 100% match in the 10x whitelist are included). | per-sample |
-| Whitelist | ./{{ alias }}/whitelist.tsv | The barcodes found in the library that remain after filtering. | per-sample |
-| Alignment output per sample | ./{{ alias }}/tagged.bam | Genomic alignment output file. | per-sample |
-| Alignment index per sample | ./{{ alias }}/tagged.bam.bai | Genomic alignment index file. | per-sample |
-| Transcriptome sequence | ./{{ alias }}/transcriptome.fa.gz | Transcriptome generated by Stringtie during transcript discovery stage | per-sample |
-| Transcriptome annotation | ./{{ alias }}/transcriptome.gff.gz | Transcriptome annotation generated by Stringtie during transcript discovery stage | per-sample |
-
 
 
 
@@ -247,7 +194,7 @@ The following schematic shows an example read structure from 10x Genomics 3&#824
 <figcaption>Fig.1 Read structure for 10x 3prime kit reads</figcaption>
 </figure>
 
-Adapter are located within the reads using [vsearch](https://github.com/torognes/vsearch) (`Read1` and `TSO` in Fig.1 in the case of the 3prime kit).
+Adapters are located within the reads using [vsearch](https://github.com/torognes/vsearch) (`Read1` and `TSO` in Fig.1 in the case of the 3prime kit).
 The table below details the adapter sequences for each of the 10x Genomics kits, along with links to the relevant user guides.
 
 | Kit      | adapter1               | adapter2                    | 10x user guide                                                                                                                             |
@@ -256,7 +203,14 @@ The table below details the adapter sequences for each of the 10x Genomics kits,
 | multiome | CTACACGACGCTCTTCCGATCT | ATGTACTCTGCGTTGATACCACTGCTT | [5' kit](https://cdn.10xgenomics.com/image/upload/v1666737555/support-documents/CG000331_ChromiumNextGEMSingleCell5-v2_UserGuide_RevE.pdf) |
 | 5&#8242; | CTACACGACGCTCTTCCGATCT | GTACTCTGCGTTGATACCACTGCTT   | [multiome kit](https://teichlab.github.io/scg_lib_structs/data/CG000338_ChromiumNextGEM_Multiome_ATAC_GEX_User_Guide_RevB.pdf)             |
 
-Concatenated reads are identified by adapter configuration and are split into individual subreads and
+| Kit      | adapter1                | adapter2                     | 10x user guide                                                                                                                              |
+|----------|-------------------------|------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|
+| 3&#8242; | CTACACGACGCTCTTCCGATCT  | ATGTACTCTGCGTTGATACCACTGCTT  | [3' kit](https://cdn.10xgenomics.com/image/upload/v1660261285/support-documents/CG000204_ChromiumNextGEMSingleCell3_v3.1_Rev_D.pdf)         |
+| 5&#8242; | CTACACGACGCTCTTCCGATCT  | ATGTACTCTGCGTTGATACCACTGCTT  | [5'  kit](https://cdn.10xgenomics.com/image/upload/v1666737555/support-documents/CG000331_ChromiumNextGEMSingleCell5-v2_UserGuide_RevE.pdf) |
+| Multiome | CTACACGACGCTCTTCCGATCT  | GTACTCTGCGTTGATACCACTGCTT    | [Multiome kit](https://cdn.10xgenomics.com/image/upload/v1728078404/support-documents/CG000338_ChromiumNextGEM_Multiome_ATAC_GEX_User_Guide_RevG.pdf.pdf)              |
+| Visium   | CTACACGACGCTCTTCCGATCT  | ATGTACTCTGCGTTGATACCACTGCTT  | [Visium kit](https://cdn.10xgenomics.com/image/upload/v1695417753/support-documents/CG000239_VisiumSpatialGeneExpression_UserGuide_RevG.pdf) |
+
+Concatenated reads are identified by adapter configuration and are split into individual subreads and 
 reorientated if required.
 The following table details the various configurations and the actions taken for each.
 
@@ -312,8 +266,24 @@ The next stage is to align the preprocessed reads to the reference genome. This 
 read assignment in downstream steps.
 
 The stranded and trimmed FASTQ reads are mapped to the reference genome using minimap2.  
-The parameter `resources_mm2_max_threads int` controls the threads given to an alignment process.
-Other optional parameters can be supplied to minimap2 using `resources_mm2_flags` (for example `--resources_mm2_flags="-I 16GB"`).
+
+The reference data can be supplied one of two ways:
+1. as a local path to a folder with `--ref_genome_dir`.
+Either use a 10x reference bundle (https://www.10xgenomics.com/support/software/cell-ranger/downloads#References) 
+or ensure that the reference directory contains the following files in the same folder structure
+```
+└── refdata
+    ├── fasta
+    │   └── genome.fa (or genome.fa.gz)
+    └── genes
+        └── genes.gtf (or genes.gtf.gz)
+```
+2. `--epi2me_resource_bundle`: Select this option to use a prebuilt 10x resource directory.
+This will be downloaded automatically by the workflow and stored in `store-dir`;
+subsequent runs from the same directory will reuse the reference data stored there.  
+There are currently prebuilt resource bundles for the 10x Human reference (GRCh38) - 2024-A
+reference bundle (https://www.10xgenomics.com/support/software/cell-ranger/downloads).
+
 
 ### 5. Barcode correction
 
@@ -330,11 +300,16 @@ The correction proceeds as follows:
   - has a min quality > `barcode_min_quality` (default 15)
 
 In each cell library there are expected to be some low quality cells and empty droplets that can be identified by their low number of reads.
-To remove these cells, the shortlist is filtered with a quantile based threshold.
+To remove these cells, the shortlist is filtered with a quantile-based threshold if `estimate_cell_count` is set to `true` (default).
 This threshold is determined by ranking the cells by read count and taking the top n cells (n = `expected_cells`).
 The read count 95th percentile / 20 is the threshold used. This threshold can be visualised in the knee plots generated by the workflow.
 
-For uncorrected barcodes not present in the shortlist, they are cross-referenced against the shortlist, and are assigned
+Alternatively if a predetermined number of cells is required for analysis, setting `estimate_cell_count` to `false` results in a cell count of `expected_cells`.
+
+*note*: As `visium` barcodes do not represent cells, but rather tissue coordinates,
+shortlist cell count thresholding is not performed for `visium` analysis.
+
+For uncorrected barcodes not present in the shortlist, they are cross-referenced against the shortlist, and are assigned 
 a barcode from this list if the candidate barcode meets the following criteria:
 
 - the query and closest-matched shortlist barcode have an edit distance <= 2
@@ -397,22 +372,40 @@ The gene x cell and transcript x cell expression matrices are the main outputs o
 the single cell experiment.
 
 The expression matrices are generated by collapsing the corrected UMIs (counting each unique UMI once) and summing
-the counts of features (gene or transcript) per cell to give a feature x cell expression matrix (`*expression.counts.tsv`).
+the counts of features (gene or transcript) per cell to give a feature x cell expression matrix and are output as a folder of files in  Market Exchange (MEX) 
+format (see the [output docs](#outputs))
 
-The expression count matrices are further processed in the following way to give gene x cell processed matrices
-(`*expression.processed.tsv`):
+The expression count matrices are further processed in the following way to give gene x cell processed matrices 
+and are also output in  Market Exchange (MEX) format.
+* Cells are dropped that contain less than `matrix_min_genes` genes or transcripts (default 200)
+* Genes are dropped which are present in fewer than `matrix_min_cells` (default 3)
+* Cells where mitochondrial genes make up more than `matrix_max_mito` (default 20%) are dropped
+* Counts are normalized to `matrix_norm_count` (default 10,000) reads/cell
+* Normalized counts are finally log10 transformed
 
-- Cells are dropped that contain less than `matrix_min_genes` genes or transcripts (default 200)
-- Genes are dropped which are present in fewer than `matrix_min_cells` (default 3)
-- Cells where mitochondrial genes make up more than `matrix_max_mito` (default 20%) are dropped
-- Counts are normalized to `matrix_norm_count` (default 10,000) reads/cell
-- Normalized counts are finally log10 transformed
+One of the outputs from processing 10x Genomics Visium HD data are gene and transcript expression matrices.
+These are in the same format as the expression matrices described above for single cells data.
+To generate these matrices, the 2 µm x  2 µm data is binned by 4x to create 8 µm x 8 µm bins.
+This binned data is more amenable to visualisation and can ensure that there is sufficient transcript coverage per region to work with.
+This binned data is used within the workflow for spatial plotting in the report and for creating the processed expression matrices.
+The resulting MEX format directories are suffixed with `_8um`.
+
+For those users that require greater spatial resolution, the workflow ouptuts also include unbinned 2 µm x 2 µm expression matrices, 
+which can be found in the directories suffixed with `_8um`.
 
 ### 9. Tagging bam files
 
 BAM files generated from aligning reads to the reference genome are now tagged with the
 following information from the workflow. By default, the BAMs are output per chromosome, but can be concatenated
 into a single file per sampe using `merge_bam`. The new bam will contain the following tags:
+  - CB: corrected cell barcode sequence
+  - CR: uncorrected cell barcode sequence
+  - CY: Phred quality scores of the uncorrected cell barcode sequence
+  - UB: corrected UMI sequence
+  - UR: uncorrected UMI sequence
+  - UY: Phred quality scores of the uncorrected UMI sequence
+  - GN: Assigned gene ID
+  - TR: Assigned transcript ID
 
 - CB: corrected cell barcode sequence
 - CR: uncorrected cell barcode sequence
@@ -440,8 +433,57 @@ are subsampled by varying degrees and the resulting median reads/cell is plotted
   (50%) then for each two new reads, one of those should represent a new UMI. If the sequencing saturation is lower, at 0.2
   for example, then on average 1.25 reads would need to be sequenced to obtain a new UMI.
 
-### 11. Make UMAP plots
+### 11. SNV calling
+wf-single-cell contains an experimental single nucleotide variant (SNV) calling workflow based on [longshot](https://github.com/pjedge/longshot). 
+Currently the workflow has been tested with a maximum of 1500 cells, and can be expected to take up 24 hours with a 64 core machine. 
+Work is underway to improve the performance of the SNV workflow.
 
+#### Summary of the SNV workflow:
+- Tagged BAMs are split by cell barcode.
+- Preprocessing of the barcode-split BAM is required before processing with longshot:
+  * UMI deduplication with [UMI-tools](https://umi-tools.readthedocs.io/en/latest/reference/dedup.html).
+  * Splitting of records by exon using [gatk SplitNCigarReads](https://gatk.broadinstitute.org/hc/en-us/articles/360036858811-SplitNCigarReads).
+- Each per-cell BAM is processed with longshot to generate an initial set of per-cell candidates.
+These candidates can represent variants that may not be detected in bulk cDNA as they may be present in few cells.
+- The per-cell BAMs for each sample are merged and processed with longshot to give a set of bulk sample candidates. 
+Some of these candidate variants may represent variants that were not detected at the initial per-cell genotyping due to low coverage within the cell.
+- The bulk sample and per-cell candidate variants are merged to produce a final set of candidate variants.
+- A second round of per cell genotyping is carried out with longshot using the merged candidates from the previous steps. 
+- The SNV workflow outputs: 
+  * A merged VCF (`output/<alias>.final_merged.vcf.gz`) containing the genotype calls for each cell in the sample columns.
+  * A MEX format genotype snv x cell matrix (`output/genotype_matrix`), which can be loaded into downstream tools such as seurat.
+  * The genotypes are encodes as follows
+      * homozygous REF : 0
+      * heterozygous ALT/REF 1
+      * homozygous ALT: 2
+
+
+### 12. Fusion transcript calling
+Fusion transcript calling can be enabled using [ctat-LR-fusion](https://github.com/TrinityCTAT/CTAT-LR-fusion),
+allowing reads derived from fusion transcripts to be identified and assigned to cells. 
+This part of the workflow can be enabled with `--call_fusions`.
+
+The taqged BAM output from the workflow, containing cell and UMI barcode tags, is used as
+input to ctat-LR-fusion. 
+
+ctat-LR-fusion requires a resource directory containing reference sequence and annotation information. It is important that the ctat-LR-fusion resource is built against the same
+reference data as is used elsewhere in the workflow. For example, if the `ref_genome_dir`
+contains sequence from hg38 and Gencode44 annotations, then the ctat-LR-fusion resource directory should be built against these.
+
+There are two ways to supply the ctat-LR-fusion resource directory:
+
+1.  `--ctat_resource_dir`: A path to a local copy of the resource directory.
+Prebuilt resource directories can be found here:  https://data.broadinstitute.org/Trinity/CTAT_RESOURCE_LIB/.
+2. `--epi2me_resource_bundle`: Select this option to use a prebuilt ctat-LR-fusion resource bundle and the corresponding 10x reference data,
+which will be automatically downloaded from the cloud.
+Currently we have prebuilt bundles for the 10x human reference (GRCh38) - 2024-A
+reference bundle (https://www.10xgenomics.com/support/software/cell-ranger/downloads).
+
+The main output is a per read summary file where each read called as a fusion
+by ctat-LR-fusion is associated with a cell barcode/UMI and gene/transcript assignments. 
+
+
+### 12. Make UMAP plots
 UMAP (Uniform Manifold Approximation and Projection) is a data visualisation algorithm used
 for dimensionality reduction. It aims to preserve the local structure and relationships in high-dimensional data (in this case a gene x cell count matrix)
 when projecting it into a two-dimensional space. This allows structure within the data, such as cell type and state, to be visualised,
@@ -460,6 +502,136 @@ The UMAP algorithm is stochastic, therefore analysing the same data multiple tim
 In order to have some confidence in the observed results, it can be useful to run the projection multiple times.
 The number of repeated projections can be set with `umap_n_repeats` (default 3)
 
+
+### 13 Visium HD support
+Visium HD is supported. ONT reads must first be processed by 10x Genomics Space Ranger. 
+Please see the instructions at https://epi2me.nanoporetech.com/epi2me-docs/tools/percula/. 
+
+ONT long read BAMs are processed by Percula to produce BAM files that are compatible with Space Ranger.
+
+wf-single-cell has the following relevant options:
+
+- `--bam`: the long read BAM output by Percula
+- `--spaceranger_bam`: the demultiplexed tagged BAM output by Space Ranger
+- `--adapter_stats`: the configs.json file output by Percula
+
+Note that the workflow expects a single sample for analysis of Visium HD data.
+
+
+
+## Input parameters
+
+### Input Options
+
+| Nextflow parameter name  | Type | Description | Help | Default |
+|--------------------------|------|-------------|------|---------|
+| fastq | string | FASTQ files to use in the analysis. | This accepts one of three cases: (i) the path to a single FASTQ file; (ii) the path to a top-level directory containing FASTQ files; (iii) the path to a directory containing one level of sub-directories which in turn contain FASTQ files. In the first and second case, a sample name can be supplied with `--sample`. In the last case, the data is assumed to be multiplexed with the names of the sub-directories as barcodes. In this case, a sample sheet can be provided with `--sample_sheet`. |  |
+| bam | string | BAM or unaligned BAM (uBAM) files to use in the analysis. | This accepts one of three cases: (i) the path to a single BAM file; (ii) the path to a top-level directory containing BAM files; (iii) the path to a directory containing one level of sub-directories which in turn contain BAM files. In the first and second case, a sample name can be supplied with `--sample`. In the last case, the data is assumed to be multiplexed with the names of the sub-directories as barcodes. In this case, a sample sheet can be provided with `--sample_sheet`. |  |
+| spaceranger_bam | string | BAM file generated by 10x Genomics Space Ranger. | Only required if using 10x Genomics Visium HD data |  |
+| adapter_stats | string | The adapter statistics JSON file generated by Percula. | Only required if you have provided a BAM to spaceranger_bam. |  |
+| epi2me_resource_bundle | string | Reference genome resource bundle to automatically download. | If selected, a prebuilt 10x reference genome bundle will be automatically downloaded from the EPI2ME AWS cloud. If `call_fusions` is selected, a matched ctat-LR-fusion resource directory will also be downloaded. This overrides `ref_genome_dir`, and `ctat_resourses`. The selected resources will be automatically downloaded, on the first run, into the directory defined by the `store_dir` parameter (default `wf-single-cell_resources`). Subsequent workflow runs will use the pre-downloaded resources. |  |
+| ref_genome_dir | string | A local path to the 10x reference directory. | The workflow requires a 10x reference directory containing sequence and annotation data. The folder should contain either uncompressed or gzipped files: genes/genes.gtf or genes/genes.gtf.gz, and fasta/genome.fa or fasta/genome.fa.gz, as per the 10x reference folder format. 10x reference folders can be downloaded from https://www.10xgenomics.com/support/software/cell-ranger/downloads. Alternatively, the workflow can download a limited set of prebuilt 10x references using the `epi2me_resource_bundle` parameter |  |
+| ctat_resources | string | For fusion transcript calling. A local path to ctat-LR-fusion resource directory. | The ctat-LR-fusion resource bundle must be built against the same reference genome data as is given with `ref_genome_dir`. Resource bundles can be downloaded from https://data.broadinstitute.org/Trinity/CTAT_RESOURCE_LIB/, and instructions for building your own resources bundle can be found here: https://github.com/TrinityCTAT/ctat-genome-lib-builder. Alternatively see the `epi2me_resource_bundle` option |  |
+| kit | string | The 10x kit and version separated by a colon (eg: 3prime:v3) | 10x kits can be released with different versions, each requiring a specific whitelist that is looked-up by the workflow. If `single_cell_sample_sheet` is not defined, the 10x kit is applied to all samples. This parameter is ignored if `single_cell_sample_sheet` is supplied. |  |
+| expected_cells | integer | Number of expected cells in the sample. | The number of expected cells. If `single_cell_sample_sheet` is not defined, `expected_cells` is applied to all samples. This parameter is ignored if `single_cell_sample_sheet` is supplied. |  |
+| estimate_cell_count | boolean | Estimate cell count from the data. | If set to true, the cell count will be estimated from the read count distribution. If set to false, the top `expected_cells` cells with highest read support will be selected. | True |
+| single_cell_sample_sheet | string | An optional CSV file used to assign library metadata per sample. If all samples have the same library metadata, this can be supplied instead by using the `--kit` and `--expected_cells` parameters. | Columns should be: [sample_id, kit, exp_cells]. This must not be confused with the MinKNOW sample_sheet. `sample_id` should correspond to `sample_name` which is defined either in the `sample_sheet`, given by the `sample` parameter (for single sample runs) or if no `sample_sheet` or `sample` is given, is derived from the folder name containing the FASTQ files. |  |
+| full_length_only | boolean | Only process full length reads. | If set to true, only process reads or subreads that are classified as full length (read segments flanked by compatible adapters in the expected orientation). | True |
+| min_read_qual | number | Specify read quality lower limit. | Any reads with a quality lower than this limit will not be included in the analysis. |  |
+| call_fusions | boolean | Use ctat-LR-fusion to call fusion reads. | ctat-LR-fusion is a tool for calling fusions from long reads. | False |
+
+
+### Sample Options
+
+| Nextflow parameter name  | Type | Description | Help | Default |
+|--------------------------|------|-------------|------|---------|
+| sample_sheet | string | A CSV file used to map barcodes to sample aliases. The sample sheet can be provided when the input data is a directory containing sub-directories with FASTQ files. | The sample sheet is a CSV file with, minimally, columns named `barcode` and `alias`. Extra columns are allowed. A `type` column is required for certain workflows and should have the following values; `test_sample`, `positive_control`, `negative_control`, `no_template_control`. |  |
+| sample | string | A single sample name for non-multiplexed data. Permissible if passing a single .fastq(.gz) file or directory of .fastq(.gz) files. |  |  |
+
+
+### Output Options
+
+| Nextflow parameter name  | Type | Description | Help | Default |
+|--------------------------|------|-------------|------|---------|
+| out_dir | string | Directory for output of all workflow results. |  | output |
+
+
+### Advanced options
+
+| Nextflow parameter name  | Type | Description | Help | Default |
+|--------------------------|------|-------------|------|---------|
+| call_variants | boolean | Call cell-level single nucleotide variants (SNV). | Call single cell variants using a longshot-based workflow. This subworkflow is computationally intensive, datasets with large numbers of cells may take a long time. | False |
+| report_variants | string | Display information about variants of interest in the report. | A VCF file containing variants of interest. |  |
+| kit_config | string | A file defining the configurations associated with the various supported 10x kits. | A CSV file is expected with the following headers [kit, barcode_length, umi_length]. If not specified, a default `kit_configs.csv` (found in the project directory root) will be used. This parameter does not typically need be changed. |  |
+| threads | integer | Number of CPU threads to use in resource intensive processes. | The total CPU resource used by the workflow is constrained by the executor configuration. | 8 |
+| fastq_chunk | integer | Sets the maximum number of reads per chunk for the initial processing of reads. | Controls batching of reads for processing. | 1000000 |
+| barcode_adapter1_suff_length | integer | Suffix length of the read1 adapter to use in creating the probe sequence for identifying barcode/UMI bases. | For example, specifying 12 would mean that the last 12 bases of the specified read1 sequence will be included in the probe sequence. | 10 |
+| barcode_min_quality | integer | Minimum allowed nucleotide-level quality score in the extracted/uncorrected barcode sequence. | Values equal or higher to this this will be considered 'high-quality' and used for generating the barcode whitelist. | 15 |
+| barcode_max_ed | integer | Maximum allowable edit distance between uncorrected barcode and the best matching corrected barcode from the sample whitelist. | Barcodes are corrected by searching from a list of barcodes known to exist in the dataset. A maximum edit distance of 2 between query and whitelist barcode is recommended. | 2 |
+| barcode_min_ed_diff | integer | Minimum allowable edit distance difference between whitelist barcode candidates. | If there is more than one candidate barcode found in the whitelist, the edit distance difference of the top hit and second best hits (in relation to the uncorrected barcode) must be at least this value to be able to assign a barcode. If the edit distance difference is less than this, it is assumed that barcode identity is amiguous, and the read is not tagged with a corrected barcode. | 2 |
+| gene_assigns_minqv | integer | Minimum MAPQ score allowed for a read to be assigned to a gene. |  | 30 |
+| matrix_min_genes | integer | Filter cells from the gene expression matrix if they contain fewer than <matrix_min_genes> genes. |  | 200 |
+| matrix_min_cells | integer | Filter genes from the gene expression matrix that are observed in fewer than <matrix_min_cells> cells. |  | 3 |
+| matrix_max_mito | integer | Filter cells from the gene expression matrix if more than <matrix_max_mito> percent of UMI counts come from mitochondrial genes. |  | 20 |
+| matrix_norm_count | integer | Normalize expression matrix to <matrix_norm_count> counts per cell. |  | 10000 |
+| genes_of_interest | string | File containing a list of gene symbols (one symbol per line) to annotate with expression values in the UMAP projections. If doing Visium spatial analysis, these genes will be used to annotate the spatial plots.  |  |  |
+| mito_prefix | string | Gene name prefix to identify for mitochondrial genes. | Parts of the workflow analyse mitochondrial genes separately. These genes are identified by searching for a gene name prefix. Human mitochondrial genes can be identified with prefix 'MT-' and mouse genes with prefix 'mt-'. If the reference genome contains data from multiple organisms with different nomenclature, multiple prefixes can be supplied like so: 'MT-,mt-' | MT- |
+| umap_n_repeats | integer | Number of UMAP projection to repeat for each dataset. | The UMAP algorithm contains elements of randomness that can mislead users into seeing associations between cells that are not meaningful. It is recommended to view multiple plots generated with the same parameters and check that any observed structure is consistent across runs. | 3 |
+| stringtie_opts | string | StringTie options for transcriptome assembly. | StringTie option string can be supplied at the command line as in this example: `--stringtie_opts="-c 5 -m 100 "`. StringTie options can be found here: http://ccb.jhu.edu/software/stringtie/index.shtml?t=manual. The default option (-c 2) ensures that only transcripts with a coverage of 2 or higher are included in the generated transcriptome | -c 2 |
+
+
+
+
+
+
+## Outputs
+
+Output files may be aggregated including information for all samples or provided per sample. Per-sample files will be prefixed with respective aliases and represented below as {{ alias }}.
+
+| Title | File path | Description | Per sample or aggregated |
+|-------|-----------|-------------|--------------------------|
+| workflow report | wf-single-cell-report.html | Report for all samples | aggregated |
+| Results summaries | {{ alias }}/{{ alias }}.config_stats.json | Results summaries including adapter configuration numbers. | per-sample |
+| Gene expression counts | {{ alias }}/{{ alias }}.gene_raw_feature_bc_matrix/matrix.mtx.gz | Gene x cell expression sparse matrix values (MEX format). | per-sample |
+| Gene expression barcodes | {{ alias }}/{{ alias }}.gene_raw_feature_bc_matrix/barcodes.tsv.gz | Barcode column names (MEX format). | per-sample |
+| Gene expression features | {{ alias }}/{{ alias }}.gene_raw_feature_bc_matrix/features.tsv.gz | Feature row names (MEX format). | per-sample |
+| Visium HD gene expression counts (8um) | {{ alias }}/{{ alias }}.gene_raw_feature_bc_matrix_8um/matrix.mtx.gz | Binned gene x cell expression sparse matrix values (MEX format). | per-sample |
+| Visium HD gene expression barcodes (8um) | {{ alias }}/{{ alias }}.gene_raw_feature_bc_matrix_8um/barcodes.tsv.gz | Binned barcode column names (MEX format). | per-sample |
+| Visium HD gene expression features (8um) | {{ alias }}/{{ alias }}.gene_raw_feature_bc_matrix_8um/features.tsv.gz | Binned feature row names (MEX format). | per-sample |
+| Visium HD gene expression counts (2um) | {{ alias }}/{{ alias }}.gene_raw_feature_bc_matrix_2um/matrix.mtx.gz | unbinned gene x cell expression sparse matrix values (MEX format). | per-sample |
+| Visium HD gene expression barcodes (2um) | {{ alias }}/{{ alias }}.gene_raw_feature_bc_matrix_2um/barcodes.tsv.gz | unbinned barcode column names (MEX format). | per-sample |
+| Visium HD gene expression features (2um) | {{ alias }}/{{ alias }}.gene_raw_feature_bc_matrix_2um/features.tsv.gz | unbinned feature row names (MEX format). | per-sample |
+| Transcript expression counts | {{ alias }}/{{ alias }}.transcript_raw_feature_bc_matrix/matrix.mtx.gz | Transcript x cell expression sparse matrix values (MEX format). | per-sample |
+| Transcript expression MEX barcodes | {{ alias }}/{{ alias }}.transcript_raw_feature_bc_matrix/barcodes.tsv.gz | Barcode column names (MEX format). | per-sample |
+| Transcript expression MEX features | {{ alias }}/{{ alias }}.transcript_raw_feature_bc_matrix/features.tsv.gz | Feature row names (MEX format). | per-sample |
+| Processed gene expression counts | {{ alias }}/{{ alias }}.gene_processed_feature_bc_matrix/matrix.mtx.gz | Filtered and normalized gene x cell expression sparse matrix values (MEX format). | per-sample |
+| Processed gene expression barcodes | {{ alias }}/{{ alias }}.gene_processed_feature_bc_matrix/barcodes.tsv.gz | Barcode column names (MEX format) for processed matrix. | per-sample |
+| Processed gene expression features | {{ alias }}/{{ alias }}.gene_processed_feature_bc_matrix/features.tsv.gz | Feature row names (MEX format) for processed matrix. | per-sample |
+| Processed transcript expression counts | {{ alias }}/{{ alias }}.transcript_processed_feature_bc_matrix/matrix.mtx.gz | Filtered and normalized transcript x cell expression sparse matrix values (MEX format). | per-sample |
+| Processed transcript expression MEX barcodes | {{ alias }}/{{ alias }}.transcript_processed_feature_bc_matrix/barcodes.tsv.gz | Barcode column names (MEX format) for processed matrix. | per-sample |
+| Processed transcript expression MEX features | {{ alias }}/{{ alias }}.transcript_processed_feature_bc_matrix/features.tsv.gz | Feature row names (MEX format) for processed matrix. | per-sample |
+| Mitochondrial expression levels | {{ alias }}/{{ alias }}.gene_expression_mito_per_cell.tsv | Per cell mitochondrial gene expression as percentage total of total gene expression. | per-sample |
+| Read summary | {{ alias }}/{{ alias }}.read_summary.tsv | Per read assigned barcodes UMIs genes and transcripts. | per-sample |
+| Whitelist | {{ alias }}/{{ alias }}.whitelist.tsv | The barcodes found in the library that remain after filtering. | per-sample |
+| Alignment output per sample | {{ alias }}/{{ alias }}.tagged.bam | Genomic alignment output file. | per-sample |
+| Alignment index per sample | {{ alias }}/{{ alias }}.tagged.bam.bai | Genomic alignment index file. | per-sample |
+| Transcriptome sequence | {{ alias }}/{{ alias }}.transcriptome.fa.gz | Transcriptome generated by Stringtie during transcript discovery stage | per-sample |
+| Transcriptome annotation | {{ alias }}/{{ alias }}.transcriptome.gff.gz | Transcriptome annotation generated by Stringtie during transcript discovery stage | per-sample |
+| Gene expression umap | {{ alias }}/{{ alias }}.gene_expression_umap_*.tsv | UMAP matrix from gene expression. Varying number of files will be present based on number of umap repeats. | per-sample |
+| Transcript expression umap | {{ alias }}/{{ alias }}.transcript_expression_umap_*.tsv | UMAP matrix from transcript expression. Varying number of files will be present based on number of umap repeats. | per-sample |
+| Barcode assignment summary | {{ alias }}/{{ alias }}.bc_assignment_summary.tsv | TSV file with barcode assignment summary statistics. | per-sample |
+| Single cell SNVs | {{ alias }}/{{ alias }}.final_merged.vcf.gz | VCF file containing per-barcode single nucleotide variant calls. | per-sample |
+| Single cell SNVs index | {{ alias }}/{{ alias }}.final_merged.vcf.gz.tbi | VCF index file. | per-sample |
+| Genotype matrix | {{ alias }}/{{ alias }}.genotype_matrix/matrix.mtx.gz | Sparse MEX format matrix file. | per-sample |
+| Genotype matrix barcodes | {{ alias }}/{{ alias }}.genotype_matrix/barcodes.tsv.gz | Sparse MEX format barcode (columns) file. | per-sample |
+| Genotype matrix features | {{ alias }}/{{ alias }}.genotype_matrix/features.tsv.gz | Sparse MEX format SNV ID (rows) file. | per-sample |
+| Per-read fusion info | {{ alias }}/fusions/{{ alias }}.ctat-LR-fusion.fusion_predictions_per-read.tsv | TSV file with per-read fusion information, including gene fusion pairs and cell/UMI barcodes. | per-sample |
+| Fusion summary | {{ alias }}/fusions/{{ alias }}.ctat-LR-fusion.fusion_predictions_per-fusion.tsv | Summary of each prediciton fusion gene. | per-sample |
+| ctat-LR-fusion output | {{ alias }}/fusions/{{ alias }}.ctat-LR-fusion.tar.gz | The complete output of ctat-LR-fusion. | per-sample |
+
+
+
+
 ## Troubleshooting
 
 <!---Any additional tips.--->
@@ -467,7 +639,8 @@ The number of repeated projections can be set with `umap_n_repeats` (default 3)
 - If the workflow fails please run it with the demo data set to ensure the workflow itself is working. This will help us determine if the issue is related to the environment, input parameters or a bug.
 - See how to interpret some common nextflow exit codes [here](https://labs.epi2me.io/trouble-shooting/).
 
-## FAQ's
+
+## FAQs
 
 <!---Frequently asked questions, pose any known limitations as FAQ's.--->
 

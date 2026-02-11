@@ -24,26 +24,40 @@ def argparser():
         help="Chromosome name")
     parser.add_argument(
         "barcode_tags", type=Path,
-        help="Read tags TSV file.")
+        help="Read tags tsv.zst file.")
     parser.add_argument(
         "features", type=Path,
         help="TSV read gene/transcript assignments file.")
-    grp = parser.add_argument_group("Output")
-    grp.add_argument(
-        "--tsv_out", type=Path,
-        help="Output TSV containing a subset of read-tags in human-readable form")
-    grp.add_argument(
-        "--hdf_out", type=Path,
-        help="Output filename for HDF matrix output. \
-            Two files will be produced as filename.{gene, transcript}.ext")
-    grp.add_argument(
-        "--stats", type=Path,
-        help="Output filename for JSON statistics summary. \
-            Two files will be produced as filename.{gene, transcript}.ext")
     parser.add_argument(
         "--ref_interval", type=int, default=1000,
         help="Size of genomic window (bp) to assign as gene name if no gene \
-            assigned by featureCounts.")
+            assigned.")
+    parser.add_argument(
+        "--chunk_size", type=int, default=200000,
+        help="Approximate size of chunks to read in from the input tags file.")
+    parser.add_argument(
+        "--umi_length", type=int, default=None,
+        help="Expected UMI length. Discard reads with corrected UMIs not of this size. \
+            If None, no UMI length filtering is done.")
+    parser.add_argument(
+        "--skip_umi_clustering", action='store_true',
+        help="Skip UMI clustering and use pre-corrected UMIs \
+             in the UB column of the barcode_tags file.")
+
+    grp = parser.add_argument_group("Output")
+    grp.add_argument(
+        "--tsv_out", type=Path,
+        help="Output TSV containing primary record read-tags in human-readable form")
+    grp.add_argument(
+        "--sa_tags_out", type=Path,
+        help="Output TSV containing supplementary read-tags in human-readable form")
+    grp.add_argument(
+        "--hdf_out", type=Path,
+        help="Output directory for HDF matrix output. \
+            HDF chunks will be saved here as <chunk_num>.{gene, transcript}.hdf")
+    grp.add_argument(
+        "--stats", type=Path,
+        help="Output filename for JSON statistics.")
 
     return parser
 
@@ -109,21 +123,23 @@ def cluster(umis):
     https://umi-tools.readthedocs.io/en/latest/the_methods.html
 
     """
-    if len(umis) == 1:  # early return
+    if len(umis) == 1:  # early return; only a single read for this barcode/gene.
         return umis
     clusterer = UMIClusterer(cluster_method="directional")
     umi_counts = collections.Counter(umis)
     clusters = clusterer(umi_counts, threshold=2)
 
-    if len(clusters) == len(umis):  # no corrections
+    if len(clusters) == len(umis):  # no corrections, all clusters are singletons
         return umis
 
-    # create list of corrections
-    umi_map = dict()
-    for clust in clusters:
-        if len(clust) > 1:
-            for umi in clust[1:]:
-                umi_map[umi] = clust[0]
+    # Create list of corrections
+    # The first entry of the cluster is the representative/correct UMI.
+    umi_map = {}
+    for clust in (x for x in clusters if len(x) > 1):
+        correct = clust[0]
+        for umi in clust[1:]:
+            if umi != correct:
+                umi_map[umi] = correct
     if len(umi_map) > 0:  # pd.Series.replace is weird slow
         umis = umis.replace(umi_map)
     return umis
@@ -141,7 +157,7 @@ def create_region_name(row, ref_interval):
     return gene
 
 
-def cluster_dataframe(df, ref_interval):
+def cluster_dataframe(df, ref_interval, umi_length):
     """Process records from tags file."""
     # Create column to keep track of non-assigned genes
     df['no_gene'] = False
@@ -153,13 +169,16 @@ def cluster_dataframe(df, ref_interval):
         df.loc[regions.index, 'gene'] = regions
         df.loc[df.index.isin(regions.index), 'no_gene'] = True
     # Create gene/cell index for subsetting reads prior to clustering.
-    df["gene_cell"] = df["gene"] + ":" + df["CB"]
+    df['gene_cell'] = df['gene'] + ':' + df['CB']
     df['read_id'] = df.index
     df.set_index('gene_cell', inplace=True, drop=True)
     # UB: corrected UMI tag
-    groups = df.groupby("gene_cell")["UR"]
-    df["UB"] = groups.transform(cluster)
+    groups = df.groupby('gene_cell')['UR']
+    df['UB'] = groups.transform(lambda x: cluster(x))
     df.set_index('read_id', drop=True, inplace=True)
+    if umi_length is not None:
+        valid = df['UB'].str.len() == umi_length
+        df.drop(index=df.index[~valid], inplace=True)
     # Reset unassigned genes to '-'
     df.loc[df.no_gene, 'gene'] = '-'
     df.drop(columns='no_gene', inplace=True)
@@ -167,23 +186,77 @@ def cluster_dataframe(df, ref_interval):
 
 
 class ExpressionSummary(StatsSummary):
-    """Gene and transcript feature summary statistics."""
+    """Gene and transcript feature statistics."""
 
     fields = {
-        "tagged",
+        "valid_barcodes",
         "gene_tagged", "transcript_tagged",
         "unique_genes", "unique_transcripts"}
 
-    @classmethod
-    def from_pandas(cls, df):
+    def __init__(self, *args, **kwargs):
+        """Create summary."""
+        super().__init__(*args, **kwargs)
+        self.unique_genes = set()
+        self.unique_transcripts = set()
+
+    def pandas_update(self, df):
         """Create statistics from pandas dataframe."""
-        stats = dict()
-        stats["tagged"] = len(df)
-        stats["gene_tagged"] = len(df[df.gene != '-'])
-        stats["transcript_tagged"] = len(df[df.transcript != '-'])
-        stats["genes"] = df['gene'].nunique()  # this will include "-"
-        stats["transcripts"] = df['transcript'].nunique()  # and this
-        return cls(stats)
+        self["valid_barcodes"] += len(df[df.CB != '-'])
+        self["gene_tagged"] += len(df[df.gene != '-'])
+        self["transcript_tagged"] += len(df[df.transcript != '-'])
+        self.unique_genes.update(df.loc[df.gene != '-', 'gene'])
+        self.unique_transcripts.update(df.loc[df.transcript != '-', 'transcript'])
+
+    def to_json(self, fname):
+        """Save to JSON. First  convert features counts to n unique."""
+        self['genes'] = len(self.unique_genes)
+        self['transcripts'] = len(self.unique_transcripts)
+        super().to_json(fname)
+
+
+def chunk_reader(file_path, chunk_size, ub_col=False):
+    """
+    Read TSV file in chunks, ensuring that no CB (cell barcode) is split between chunks.
+
+    :param file_path str: Path to the zstd-compressed TSV
+    :param chunk_size int: Desired number of rows per chunk (approximate).
+    :param ub_col bool: If True, the 'UB' column is expected to be present.
+    :yields: Pandas DataFrame chunk.
+    """
+    usecols = ['read_id', 'CR', 'CY', 'UR', 'UY', 'chr', 'start', 'end', 'CB', 'SA']
+    if ub_col:
+        usecols.append('UB')
+    reader = pd.read_csv(
+        file_path, index_col='read_id', sep="\t", iterator=True,
+        usecols=usecols)
+    buffer = []
+    last_cb = None
+    current_cb = None
+
+    # All barcodes must be processed together. A large chunk of records is read in
+    # from the barcode pre-sorted DataFrame.
+    # We then iterate over rows until a new barcode is encountered,
+    # at which point the chunk and the rows are combined and yielded.
+    try:
+        while True:
+            chunk = reader.get_chunk(chunk_size)
+            buffer.append(chunk)
+            last_cb = chunk.iat[-1, chunk.columns.get_loc("CB")]
+
+            # Look for a new barcode
+            while True:
+                row = reader.get_chunk(1)
+                current_cb = row.at[row.index[0], "CB"]
+                if current_cb != last_cb:
+                    yield pd.concat(buffer)
+                    buffer = [row]  # New barcode for next chunk
+                    break
+                buffer.append(row)
+            last_cb = current_cb
+    except StopIteration:
+        # No more rows in DataFrame, yield any remaining buffer.
+        if buffer:
+            yield pd.concat(buffer)
 
 
 def main(args):
@@ -193,55 +266,76 @@ def main(args):
     if args.tsv_out is None and args.hdf_out is None:
         raise ValueError("Please supply at least one of `--tsv_out` or `--hdf_out`.")
 
-    logger.info("Reading barcode tag information.")
-    df_tags = pd.read_csv(args.barcode_tags, sep='\t', index_col='read_id')
+    stats = ExpressionSummary()
 
-    dups = df_tags[df_tags.index.duplicated(keep='first')]
-    if not dups.empty:
-        raise ValueError(
-            f"One or more input reads are duplicated, please rectify.\n"
-            f"Duplicated reads: {list(set(dups.index))[:20]}")
+    tsv_out_cols = [
+        'read_id', 'CR', 'CB', 'CY', 'UR', 'UB',
+        'UY', 'gene', 'transcript', 'start', 'end', 'chr']
+    tag_to_desc_map = {v: k for k, v in BAM_TAGS.items()}
+    tsv_out_cols = [tag_to_desc_map.get(t, t) for t in tsv_out_cols]
+
+    # Create header for tags TSV output
+    pd.DataFrame(columns=tsv_out_cols).to_csv(
+        args.tsv_out, sep='\t', header=True, index=False, compression='zstd')
+
+    # Create header for SA tags TSV output
+    pd.DataFrame(columns=tsv_out_cols).to_csv(
+        args.sa_tags_out, sep='\t', header=True, index=False, compression='zstd')
 
     logger.info("Reading feature information.")
     df_features = pd.read_csv(
         args.features, sep='\t', index_col=0)
 
-    logger.info("Merging barcode and feature information.")
-    df_tag_feature = df_tags.merge(
-        df_features, how='left', left_index=True, right_index=True).fillna('-')
+    input_has_ub_col = True if args.umi_length is None else False
 
-    logger.info("Filtering reads.")
-    df_tag_feature = df_tag_feature.loc[
-        (df_tag_feature.CB != '-') & (df_tag_feature.UR != '-')]
+    for chunk_num, df_tags in enumerate(
+            chunk_reader(args.barcode_tags, args.chunk_size, ub_col=input_has_ub_col)):
+        logger.info(f'processing chunk: {chunk_num}')
+
+        df_tags = df_tags.merge(
+            df_features, how='left', left_index=True, right_index=True).fillna('-')
+
+        logger.info("Filtering reads.")
+        df_tags = df_tags.loc[
+            (df_tags.CB != '-') & (df_tags.UR != '-')]
+
+        if args.stats:
+            logger.info("Writing JSON stats to {args.stats}")
+            stats.pandas_update(df_tags)
+
+        if args.skip_umi_clustering:
+            logger.info('Skipping UMI clustering.')
+        else:
+            logger.info("Clustering UMIs.")
+            df_tags = cluster_dataframe(df_tags, args.ref_interval, args.umi_length)
+
+        df_tags.rename(
+            columns={v: k for k, v in BAM_TAGS.items()}, copy=False, inplace=True)
+        df_tags['chr'] = args.chrom
+        df_tags.reset_index(inplace=True, drop=False)
+
+        if args.tsv_out:
+            logger.info("Writing text output.")
+            # Write the tags file for any supplementary records.
+            df_sa = df_tags[df_tags.SA != '-']
+            df_sa.drop(columns='SA', inplace=True)
+            df_sa = df_sa[tsv_out_cols]
+            df_sa.to_csv(
+                args.sa_tags_out, sep='\t', header=False,
+                mode='a', index=False, compression='zstd')
+            # Write the tags file for primary records.
+            df_tags = df_tags[tsv_out_cols]
+            df_tags.to_csv(
+                args.tsv_out, sep='\t', header=False,
+                mode='a', index=False, compression='zstd')
+
+        if args.hdf_out:
+            for feature in ("gene", "transcript"):
+                logger.info(f"Creating {feature} expression matrix.")
+                matrix = ExpressionMatrix.from_tags(df_tags, feature)
+                fname = args.hdf_out / f"{chunk_num}.{feature}.hdf"
+                matrix.to_hdf(fname)
 
     if args.stats:
-        logger.info("Writing JSON summary to {args.summary}")
-        summary = ExpressionSummary.from_pandas(df_tag_feature)
-        summary.to_json(args.stats)
-
-    logger.info("Clustering UMIs.")
-    df_tag_feature = cluster_dataframe(df_tag_feature, args.ref_interval)
-
-    logger.info("Preparing output.")
-    cols = ['CR', 'CB', 'CY', 'UR', 'UB', 'UY', 'gene', 'transcript', 'start', 'end']
-    if len(df_tag_feature) > 0:
-        df_tags_out = df_tag_feature[cols].assign(chr=args.chrom)
-    else:
-        # TODO: comes back to this, it smells janky
-        df_tags_out = (
-            pd.DataFrame(columns=['read_id'] + cols + ['chr'])
-            .set_index('read_id', drop=True)
-        )
-    df_tags_out.rename(
-        columns={v: k for k, v in BAM_TAGS.items()}, copy=False, inplace=True)
-
-    if args.tsv_out:
-        logger.info("Writing text output.")
-        df_tags_out.to_csv(args.tsv_out, sep='\t')
-
-    if args.hdf_out:
-        for feature in ("gene", "transcript"):
-            logger.info(f"Creating {feature} expression matrix.")
-            matrix = ExpressionMatrix.from_tags(df_tags_out, feature)
-            fname = args.hdf_out.with_suffix(f".{feature}{args.hdf_out.suffix}")
-            matrix.to_hdf(fname)
+        stats.to_json(args.stats)
+    logger.info("Clustering complete.")

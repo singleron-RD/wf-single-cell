@@ -19,6 +19,7 @@ class KitName(str, Enum):
     prime3 = '3prime'
     prime5 = '5prime'
     multiome = 'multiome'
+    visium = 'visium'
 
 
 def argparser():
@@ -37,20 +38,11 @@ def argparser():
     parser.add_argument(
         "superlist",
         help="Comprehensive whitelist of all possible cell barcodes.\
-        These vary depending on which 10X kit was used. \
-        For 3' v3 single cell gene expression \
-        kit: data/3M-february-2018.txt.gz. \
-        For 3' v2 single cell gene expression \
-        kit: data/737K-august-2016.txt.gz. \
-        For 5' single cell gene expression \
-        kit: data/737K-august-2016.txt.gz. \
-        For single cell multiome (ATAC + GEX) \
-        kit: data/737K-arc-v1.txt.gz.")
+        These vary depending on which 10X kit was used.")
 
     parser.add_argument(
         "--kit", type=KitName, default=KitName.prime3,
-        help="Specify either the 10X 3' gene expression kit (3prime), the 5' \
-        gene expression kit (5prime), or the multiome kit (multiome) This \
+        help="Specify the 10x kit name (without version). This \
         determines which adapter sequences to search for in the reads.")
 
     parser.add_argument(
@@ -254,7 +246,7 @@ def align_adapter(args, fastq_out=sys.stdout):
     # Use only the specified suffix length of adapter1
     adapter1_probe_seq = args.adapter1_seq[-args.adapter1_suff_length:]
 
-    if args.kit in (KitName.prime3, KitName.multiome):
+    if args.kit in (KitName.prime3, KitName.multiome, KitName.visium):
         # For these kits the probe needs to be reverse complemented
         # <adapter1_suffix>NNN...NNN<TTTTT....>
         probe_seq = "{a1}{bc}{umi}{pt}".format(
@@ -287,7 +279,7 @@ def align_adapter(args, fastq_out=sys.stdout):
 
         for read in fastq_fh:
 
-            if args.kit in (KitName.prime3, KitName.multiome):
+            if args.kit in (KitName.prime3, KitName.multiome, KitName.visium):
                 # Flip back to barcode orientation (reverse)
                 prefix_seq = rev_cmp(read.sequence)[: args.window]
                 prefix_qv = read.quality[::-1][: args.window:]
@@ -317,7 +309,7 @@ def align_adapter(args, fastq_out=sys.stdout):
                 if bc_min_qv >= args.min_barcode_qv:
                     barcode_counts[barcode] += 1
 
-                # Escape double quotes, with a precedding `"` in the quality strings
+                # Escape double quotes, with a preceding `"` in the quality strings
                 # see https://rfc-editor.org/rfc/rfc4180.html
                 umi_q_quoted = umi_qscores.replace('"', '""')
                 barcode_q_quoted = bc_qscores.replace('"', '""')
@@ -328,7 +320,7 @@ def align_adapter(args, fastq_out=sys.stdout):
                 # For full length reads, adapter2 already trimmed.
                 # Now the barcode and UMI have been extracted, these along with adapter1
                 # can be removed.
-                if args.kit in (KitName.prime3, KitName.multiome):
+                if args.kit in (KitName.prime3, KitName.multiome, KitName.visium):
                     # The reads will be cDNA-polyA-UMI-BC-Adapter1,
                     # so to trim from right
                     trim_side = 'right'
