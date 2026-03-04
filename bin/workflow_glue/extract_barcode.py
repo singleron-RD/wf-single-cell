@@ -385,6 +385,10 @@ def align_adapter_multi(args, multi, fastq_out=sys.stdout):
             'GACTACGTATTAGCAT',
             'ATGCTGACTCCTAGTC',
         ]
+    elif multi == 'GEXSCOPE-V3':
+        linker1_list = ['ACGATG']
+        linker2_list = ['CATAGT']
+
     patterns = []
     for linker1,linker2 in zip(linker1_list, linker2_list):
         probe_seq = "{a1}{bc}{linker1}{bc}{linker2}{bc}C{umi}{pt}".format(
@@ -592,6 +596,9 @@ def main(args):
         args.window = 200
     elif "GEXSCOPE-V2" in args.superlist:
         multi = "GEXSCOPE-V2"
+        args.window = 200
+    elif "GEXSCOPE-V3" in args.superlist:
+        multi = "GEXSCOPE-V3"
         args.window = 200
     if multi:
         barcode_counts = align_adapter_multi(args, multi)

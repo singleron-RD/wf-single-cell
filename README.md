@@ -3,17 +3,18 @@
 > The main code modifications are in `bin/workflow_glue/extract_barcode.py`.
 
 
-## Singleron GEXSCOPE-V2 kit. (renamed from scopeV3.0.1)
+## Singleron kit. 
 ```
 nextflow run singleron-RD/wf-single-cell \
     --fastq {fastq.gz} \
     --ref_genome_dir {ref_genome_dir} \
-    --kit'3prime:GEXSCOPE-V2' \
+    --kit '3prime:GEXSCOPE-V2' \
     --expected_cells 10000 \
     --barcode_max_ed 5 \
     -profile standard \
     -resume \
 ```
+`--kit` must be one of [3prime:GEXSCOPE-V1, 3prime:GEXSCOPE-V2, 3prime:GEXSCOPE-V3]
 
 # Single cell workflow
 

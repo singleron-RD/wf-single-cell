@@ -1,7 +1,6 @@
 nextflow run /workspace/wf-single-cell \
     --fastq ./mt_10K.fastq.gz \
-    --kit_name '3prime' \
-    --kit_version 'GEXSCOPE-V2' \
+    --kit "3prime:GEXSCOPE-V2" \
     --expected_cells 100 \
     --ref_genome_dir '/workspace/test/genome/human_mt/' \
     --matrix_min_genes 1 \
