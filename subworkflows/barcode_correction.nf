@@ -22,10 +22,12 @@ process generate_whitelist{
               emit: shortlist_summary
     // TODO: change this to take precomputed, filtered counts from extract_barcodes
     script:
-    // It doesn't make sense to do cell count thresholding of the shortlist for visium data.
-    // A visium barcode is a tissue coordinate not a cell.
-    def no_thresholding_opt = meta.kit.split(':')[0] == 'visium' ? '--no_cell_filter' : ""
-    def exp_cells_opt = meta.kit.split(':')[0] != 'visium' ? "--exp_cells ${meta['expected_cells']}" : ""
+    // It doesn't make sense to do cell count thresholding of the shortlist for spatial data.
+    // A visium/space-ff barcode is a tissue coordinate not a cell.
+    def spatial_kits = ['visium', '3prime:space-ff']
+    def is_spatial = meta.kit.split(':')[0] == 'visium' || meta.kit in spatial_kits
+    def no_thresholding_opt = is_spatial ? '--no_cell_filter' : ""
+    def exp_cells_opt = !is_spatial ? "--exp_cells ${meta['expected_cells']}" : ""
     def method_opt = params.estimate_cell_count ? "--method quantile" : "--method fixed"
     """
     workflow-glue create_shortlist \

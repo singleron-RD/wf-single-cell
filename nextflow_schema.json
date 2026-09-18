@@ -73,9 +73,15 @@
                     "help_text": "10x kits can be released with different versions, each requiring a specific whitelist that is looked-up by the workflow. If `single_cell_sample_sheet` is not defined, kit_version is applied to all samples. This parameter is ignored if `single_cell_sample_sheet` is supplied. 3prime kit options: [v2, v3]. For 5prime and multiome kits only `v1` is available.",
                     "default": "3prime:GEXSCOPE-V2",
                     "enum": [
-                        "3prime:GEXSCOPE-V3",
+                        "3prime:v2",
+                        "3prime:v3",
+                        "5prime:v1",
+                        "multiome:v1",
+                        "3prime:ArgenTAG",
                         "3prime:GEXSCOPE-V2",
-                        "3prime:GEXSCOPE-V1"
+                        "3prime:GEXSCOPE-V1",
+                        "3prime:GEXSCOPE-V3",
+                        "3prime:space-ff"
                     ]
                 },
                 "expected_cells": {

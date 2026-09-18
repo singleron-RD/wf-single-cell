@@ -369,37 +369,54 @@ def align_adapter_multi(args, multi, fastq_out=sys.stdout):
     # Use only the specified suffix length of adapter1
     adapter1_probe_seq = args.adapter1_seq[-args.adapter1_suff_length:]
 
-    if multi in ('ArgenTAG','GEXSCOPE-V1'):
-        linker1_list = ['ATCCACGTGCTTGAGA']
-        linker2_list= ['TCAGCATGCGGCTACG']
-    elif multi == 'GEXSCOPE-V2':
-        linker1_list = [
-            'ATCCACGTGCTTGAGA',
-            'TCGGTGACAGCCATAT',
-            'CGAACATGTAGGTCTC',
-            'GATTGTCACTAACGCG',
-        ]
-        linker2_list = [
-            'TCAGCATGCGGCTACG',
-            'CGTAGTCAGAAGCTGA',
-            'GACTACGTATTAGCAT',
-            'ATGCTGACTCCTAGTC',
-        ]
-    elif multi == 'GEXSCOPE-V3':
-        linker1_list = ['ACGATG']
-        linker2_list = ['CATAGT']
-
     patterns = []
-    for linker1,linker2 in zip(linker1_list, linker2_list):
-        probe_seq = "{a1}{bc}{linker1}{bc}{linker2}{bc}C{umi}{pt}".format(
+
+    if multi == 'space-ff':
+        linker1 = 'CATCACGT'
+        linker2 = 'GCTTGAGA'
+        linker3 = 'CTGTCTCTTATACACA'
+        probe_seq = "{a1}{umi}{bc}{l1}{bc}{l2}{l3}{pt}".format(
                 a1=adapter1_probe_seq,
                 bc="N" * args.barcode_length,
                 umi="N" * args.umi_length,
                 pt="T" * args.polyt_length,
-                linker1=linker1,
-                linker2=linker2,
+                l1=linker1,
+                l2=linker2,
+                l3=linker3,
             )
         patterns.append(probe_seq)
+    else:
+
+        if multi in ('ArgenTAG','GEXSCOPE-V1'):
+            linker1_list = ['ATCCACGTGCTTGAGA']
+            linker2_list= ['TCAGCATGCGGCTACG']
+        elif multi == 'GEXSCOPE-V2':
+            linker1_list = [
+                'ATCCACGTGCTTGAGA',
+                'TCGGTGACAGCCATAT',
+                'CGAACATGTAGGTCTC',
+                'GATTGTCACTAACGCG',
+            ]
+            linker2_list = [
+                'TCAGCATGCGGCTACG',
+                'CGTAGTCAGAAGCTGA',
+                'GACTACGTATTAGCAT',
+                'ATGCTGACTCCTAGTC',
+            ]
+        elif multi == 'GEXSCOPE-V3':
+            linker1_list = ['ACGATG']
+            linker2_list = ['CATAGT']
+
+        for linker1,linker2 in zip(linker1_list, linker2_list):
+            probe_seq = "{a1}{bc}{linker1}{bc}{linker2}{bc}C{umi}{pt}".format(
+                    a1=adapter1_probe_seq,
+                    bc="N" * args.barcode_length,
+                    umi="N" * args.umi_length,
+                    pt="T" * args.polyt_length,
+                    linker1=linker1,
+                    linker2=linker2,
+                )
+            patterns.append(probe_seq)
 
     with FastxFile(
             str(args.fastq), "rb") as fastq_fh, \
@@ -413,7 +430,6 @@ def align_adapter_multi(args, multi, fastq_out=sys.stdout):
         for read in fastq_fh:
 
             if args.kit in (KitName.prime3, KitName.multiome):
-                # Flip back to barcode orientation (reverse)
                 prefix_seq = rev_cmp(read.sequence)[: args.window]
                 prefix_qv = read.quality[::-1][: args.window:]
             else:
@@ -438,7 +454,6 @@ def align_adapter_multi(args, multi, fastq_out=sys.stdout):
                     args.umi_length, prefix_qv, prefix_seq
                     )
 
-            # Require minimum read1 edit distance
             if (adapter1_ed <= args.max_adapter1_ed) & \
                     (len(barcode) > 0) & (len(umi) > 0):
 
@@ -446,31 +461,21 @@ def align_adapter_multi(args, multi, fastq_out=sys.stdout):
                 if bc_min_qv >= args.min_barcode_qv:
                     barcode_counts[barcode] += 1
 
-                # Escape double quotes, with a precedding `"` in the quality strings
-                # see https://rfc-editor.org/rfc/rfc4180.html
                 umi_q_quoted = umi_qscores.replace('"', '""')
                 barcode_q_quoted = bc_qscores.replace('"', '""')
 
                 tags_fh.write('\t'.join([
                     f'"{read.name}"', f'"{barcode}"', f'"{barcode_q_quoted}"',
                     f'"{umi}"', f'"{umi_q_quoted}"']) + '\n')
-                # For full length reads, adapter2 already trimmed.
-                # Now the barcode and UMI have been extracted, these along with adapter1
-                # can be removed.
+
                 if args.kit in (KitName.prime3, KitName.multiome):
-                    # The reads will be cDNA-polyA-UMI-BC-Adapter1,
-                    # so to trim from right
                     trim_side = 'right'
                     trim_pos = p_alignment.end_query - 1
                     trim_pos -= args.polyt_length
                 else:
-                    # 5prime kit
-                    # The reads will be adatper1-BC-UMI-TSO-cDNA-polyT,
-                    # so trim from left
                     trim_side = 'left'
                     trim_pos = p_alignment.end_query
 
-                # trim and write the read
                 if trim_side == 'right':
                     read.sequence = read.sequence[:-trim_pos]
                     read.quality = read.quality[:-trim_pos]
@@ -487,11 +492,70 @@ def align_adapter_multi(args, multi, fastq_out=sys.stdout):
     bc_counts.index.name = 'barcode'
     return bc_counts
 
-def get_bc_umi(target, barcode_length):
-    """
-    >>> target = "CTTCCGATCTNNNNNNNNNTCGGTGACAGCCATATNNNNNNNNNCGTAGTCAGAAGCTGANNNNNNNNNCNNNNNNNNNNNNTTTTT"
-    >>> barcode_length = 9
-    >>> bcs,umi = get_bc_umi(target, barcode_length)
+def get_bc_umi(target, barcode_length, umi_length=None):
+    """从 probe 的 ref_alignment 中定位所有 N block，区分出 barcode 和 umi 的位置。
+
+    Probe 中用 'N' 作为占位符标记真实 read 中的可变区域（barcode / UMI）。
+    本函数扫描整个 ref_alignment，按 'N' 连续区段（N block）逐个处理，
+    根据长度把每个 N block 归类为 barcode、umi，或者拆分后的 umi+barcode。
+
+    支持两种 probe 设计：
+
+    1. 独立 block 模式（GEXSCOPE / ArgenTAG / 单 barcode kit）
+       各个 N block 之间被 linker 序列隔开，长度严格等于 barcode_length 的块
+       是 barcode，其他长度的块是 umi。
+           probe: adapter1 + BC + linker + BC + linker + BC + linker + UMI + polyT
+       N block 长度:  [8]  [8]  [8]  [12]   (barcode_length=8, 每个单独判定)
+
+    2. 合并 block 模式（space-ff）
+       UMI 和第一个 barcode 之间没有 linker 隔开，形成一个长度为
+       umi_length + barcode_length 的连续 N block。
+           probe: adapter1 + UMI+BC + linker + BC + linker2 + linker3 + polyT
+       N block 长度:  [20]       [8]        (umi_length=12, barcode_length=8)
+                      ↑ 20 == 12 + 8，需要拆开
+
+    Parameters
+    ----------
+    target : str
+        probe 与 read 比对后的 ref_alignment 字符串，包含 'N'、碱基和 gap('-')。
+        注意：gap 只出现在 query 侧（read 侧），ref 侧的 'N' block 不会被 gap 打断。
+    barcode_length : int
+        单个 barcode block 的碱基数（space-ff / GEXSCOPE 均为 8，ArgenTAG 为 9）。
+    umi_length : int, optional
+        UMI block 的碱基数。提供后启用合并 block 模式：当某个 N block 的长度恰好
+        等于 umi_length + barcode_length 时，拆分为一个 umi slice 和一个 barcode slice。
+        设为 None 时仅使用独立 block 模式。
+
+    Returns
+    -------
+    bcs : list[slice]
+        每个 barcode 在 ref_alignment 中的 slice 对象列表。至少包含 2 个元素时
+        才表示 multi-kit 的 barcode 组合有效（在 parse_probe_alignment_multi
+        中会检查 len(bcs) >= 2）。
+    umi : slice or None
+        UMI 在 ref_alignment 中的 slice 对象。若没有识别到则为 None。
+
+    Examples
+    --------
+    独立 block 模式 (GEXSCOPE-V3, 3 个 BC 各被 linker 隔开):
+    >>> ref = "CTTCCGATCTNNNNNNNNNCATAGTNNNNNNNNNACGATGNNNNNNNNNCNNNNNNNNNTTTTTT"
+    >>> bcs, umi = get_bc_umi(ref, barcode_length=9)
+    >>> len(bcs)  # 3 个独立的 9bp N block，全部识别为 barcode
+    3
+    >>> umi.start, umi.stop  # 最后那个 8bp N block 被当作 umi
+    (54, 62)
+
+    合并 block 模式 (space-ff, UMI+BC1 连在一起):
+    >>> ref = "CTTCCGATCTNNNNNNNNNNNNNNNNNNNNNCATCACGTNNNNNNNNGCTTGAGA..."
+    >>> bcs, umi = get_bc_umi(ref, barcode_length=8, umi_length=12)
+    >>> len(bcs)  # 20bp 被拆成 12bp umi + 8bp bc1，加上后面的 8bp bc2
+    2
+    >>> umi.start, umi.stop  # 20bp block 的前 12bp
+    (10, 22)
+    >>> bcs[0].start, bcs[0].stop  # 20bp block 的后 8bp (bc1)
+    (22, 30)
+    >>> bcs[1].start, bcs[1].stop  # 第二个 8bp block (bc2)
+    (38, 46)
     """
     n = len(target)
     i = 0
@@ -504,9 +568,12 @@ def get_bc_umi(target, barcode_length):
         start = i
         while i<n and target[i] == 'N':
             i += 1
+        cur_len = i - start
         cur = slice(start, i)
-        cur_len = i-start
-        if cur_len == barcode_length:
+        if umi_length is not None and cur_len == umi_length + barcode_length:
+            umi = slice(start, start + umi_length)
+            bcs.append(slice(start + umi_length, i))
+        elif cur_len == barcode_length:
             bcs.append(cur)
         else:
             umi = cur
@@ -521,14 +588,13 @@ def parse_probe_alignment_multi(
     """
     ref_alignment = p_alignment.traceback.ref
     query_alignment = p_alignment.traceback.query
-    #print("ref  : ", ref_alignment)
-    #print("query: ",query_alignment)
 
     # Find the position of the Ns in the alignment. These correspond
     # to the cell barcode + UMI sequences bound by the read1 and polyT
     bc_start_pos = ref_alignment.find('N')
-    bc_slice, umi_slice = get_bc_umi(ref_alignment, barcode_length)
-    if bc_start_pos > -1 and len(bc_slice)==3 and umi_slice:
+    bc_slice, umi_slice = get_bc_umi(ref_alignment, barcode_length, umi_length)
+
+    if bc_start_pos > -1 and len(bc_slice) >= 2 and umi_slice:
         # umi_end_pos = bc_start_pos + barcode_length + umi_length
 
         # The alignment of the first N=<args.window> bases of the read
@@ -549,14 +615,9 @@ def parse_probe_alignment_multi(
         adapter1 = query_alignment[0:bc_start_pos]
         adapter1_ed = ed.eval(adapter1, adapter1_probe_seq)
 
-        # try to correct barcode here
-        bcs = [query_alignment[bc] for bc in bc_slice]
-
-
         barcode = "".join([query_alignment[bc] for bc in bc_slice])
         barcode_no_ins = barcode.replace("-", "")
         bc_q_ascii = "".join([prefix_qual[bc] for bc in bc_slice])
-        # ensure same length
         bc_q_ascii = bc_q_ascii[:len(barcode_no_ins)]
 
         umi = query_alignment[umi_slice]
@@ -600,6 +661,10 @@ def main(args):
     elif "GEXSCOPE-V3" in args.superlist:
         multi = "GEXSCOPE-V3"
         args.window = 200
+    elif "space-ff" in args.superlist:
+        multi = "space-ff"
+        args.window = 300
+
     if multi:
         barcode_counts = align_adapter_multi(args, multi)
     else:
