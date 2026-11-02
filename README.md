@@ -14,7 +14,42 @@ nextflow run singleron-RD/wf-single-cell \
     -profile standard \
     -resume \
 ```
-`--kit` must be one of [3prime:GEXSCOPE-V1, 3prime:GEXSCOPE-V2, 3prime:GEXSCOPE-V3]
+`--kit` must be one of [3prime:GEXSCOPE-V1, 3prime:GEXSCOPE-V2, 3prime:GEXSCOPE-V3, 3prime:space-ff]
+
+### Barcode/UMI structure
+
+Singleron kits use a different read structure from 10x: the cell barcode is split into
+several segments separated by fixed linker sequences. The concatenated segments form the
+cell barcode, and each kit uses its own probe. The first `window` bp of each read (after
+stranding) are aligned against each candidate probe, and the alignment with the highest
+score is used (`align_adapter_multi` in `bin/workflow_glue/extract_barcode.py`).
+
+| kit | barcode length | UMI length | probe structure (adapter orientation) | linkers (5'->3') | window |
+|-----|------|-----|---------------------------------------|------------------|--------|
+| GEXSCOPE-V1 | 8 | 12 | adapter1 + BC + L1 + BC + L2 + BC + C + UMI + polyT | L1: `ATCCACGTGCTTGAGA`, L2: `TCAGCATGCGGCTACG` | 200 |
+| GEXSCOPE-V2 | 9 | 12 | adapter1 + BC + L1 + BC + L2 + BC + C + UMI + polyT | L1: `ATCCACGTGCTTGAGA` / `TCGGTGACAGCCATAT` / `CGAACATGTAGGTCTC` / `GATTGTCACTAACGCG`, L2: `TCAGCATGCGGCTACG` / `CGTAGTCAGAAGCTGA` / `GACTACGTATTAGCAT` / `ATGCTGACTCCTAGTC` | 200 |
+| GEXSCOPE-V3 | 9 | 12 | adapter1 + BC + L1 + BC + L2 + BC + C + UMI + polyT | L1: `ACGATG`, L2: `CATAGT` | 200 |
+| space-ff | 8 | 12 | adapter1 + UMI + BC + L1 + BC + L2 + L3 + polyT | L1: `CATCACGT`, L2: `GCTTGAGA`, L3: `CTGTCTCTTATACACA` | 300 |
+
+where `BC` is a barcode segment, `UMI` is the UMI, `C` is a spacer base and `polyT` is the
+polyT tract. The adapter1 used is the standard 3' adapter1 (`CTACACGACGCTCTTCCGATCT`), and
+`BC` is repeated three times in the GEXSCOPE kits but only twice in space-ff.
+GEXSCOPE-V2 additionally supports four alternative linker pairs; the combination giving
+the best alignment is used for each read.
+
+Notes:
+- GEXSCOPE-V1/V2/V3 place the UMI after the barcode segments, whereas space-ff places the
+  UMI immediately upstream of the first barcode segment. In the space-ff layout the UMI and
+  the first barcode are not separated by a linker and appear as a single contiguous block
+  in the probe; `get_bc_umi` splits such a block into a UMI part and a barcode part using
+  the known UMI and barcode lengths.
+- `space-ff` is a spatial assay: its barcode identifies a position on the feature (tissue)
+  rather than a single cell. `3prime:space-ff` is therefore treated like `visium:v1` when
+  the barcode shortlist is generated (no cell-count thresholding, `--no_cell_filter`),
+  and `expected_cells` is not required.
+- Barcode correction uses the corresponding whitelists in `data/`
+  (`884k-GEXSCOPE-V1.txt.gz`, `1769k-GEXSCOPE-V2.txt.gz`, `1769k-GEXSCOPE-V3.txt.gz`,
+  `9k-space-ff.txt.gz`). 
 
 # Single cell workflow
 

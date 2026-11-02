@@ -22,6 +22,7 @@ This workflow supports the following 10x kits:
 + multiome (gene expression only): v1 
 + visium 3': v1 
 + visium HD 3': v1
++ Singleron 3': ArgenTAG, GEXSCOPE-V1/V2/V3 and space-ff (spatial)
 
 The [BLAZE](https://github.com/shimlab/BLAZE) preprint provided useful benchmarking of the original sockeye implementation. 
 This assisted in the selection of appropriate thresholds for cell cut-off and for defining the limits of the gene x cell matrix.

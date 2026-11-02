@@ -77,12 +77,66 @@ following table.
 | 3&#8242;   |v3|16| 12         |
 | 5&#8242;   |v1|16| 10         |
 | multiome |v1|16| 12         |
+| 3&#8242;   |ArgenTAG|24| 12         |
+| 3&#8242;   |GEXSCOPE-V1|8| 12     |
+| 3&#8242;   |GEXSCOPE-V2|9| 12     |
+| 3&#8242;   |GEXSCOPE-V3|9| 12     |
+| 3&#8242;   |space-ff|8| 12         |
 
 Workflow options:
 - The size of the adapter1 suffix can be specified with: `barcode_adapter1_suff_length`
 
 Once the barcode and UMI has been extracted, these are then trimmed from the reads along
 with the adapter1 sequence. These trimmed reads are then used in the alignment step.
+
+#### Singleron GEXSCOPE and space-ff libraries
+Singleron libraries use a different read structure to 10x: instead of a single cell barcode,
+the barcode is split into several segments separated by fixed linker sequences
+([extract_barcode.py](file:///SGRNJ06/randd/USER/zhouyiqi/work/repo/wf-single-cell/bin/workflow_glue/extract_barcode.py)).
+The concatenated segments form the cell barcode, and a different probe is used for each kit.
+For these kits the first `window` bp of each read (after stranding) are aligned against each
+candidate probe, and the alignment with the highest score is used:
+
+| kit | probe structure (adapter orientation) | linkers (5&#8242;&#8594;3&#8242;) | window |
+|-----|---------------------------------------|--------------------------------|--------|
+| GEXSCOPE-V1 | adapter1 + BC + L1 + BC + L2 + BC + C + UMI + polyT | L1: `ATCCACGTGCTTGAGA`, L2: `TCAGCATGCGGCTACG` | 200 |
+| GEXSCOPE-V2 | adapter1 + BC + L1 + BC + L2 + BC + C + UMI + polyT | L1: `ATCCACGTGCTTGAGA` / `TCGGTGACAGCCATAT` / `CGAACATGTAGGTCTC` / `GATTGTCACTAACGCG`, L2: `TCAGCATGCGGCTACG` / `CGTAGTCAGAAGCTGA` / `GACTACGTATTAGCAT` / `ATGCTGACTCCTAGTC` | 200 |
+| GEXSCOPE-V3 | adapter1 + BC + L1 + BC + L2 + BC + C + UMI + polyT | L1: `ACGATG`, L2: `CATAGT` | 200 |
+| space-ff | adapter1 + UMI + BC + L1 + BC + L2 + L3 + polyT | L1: `CATCACGT`, L2: `GCTTGAGA`, L3: `CTGTCTCTTATACACA` | 300 |
+
+where `BC` is a barcode segment, `UMI` is the UMI, `C` is a spacer base and `polyT` is the
+polyT tract. The adapter1 used is the standard 3&#8242; adapter1
+(`CTACACGACGCTCTTCCGATCT`) and `BC` may be repeated three times (as in GEXSCOPE) or twice
+(as in space-ff). GEXSCOPE-V2 additionally supports four alternative linker pairs, and the
+combination giving the best alignment is used for each read.
+
+Note that:
+* GEXSCOPE-V1/V2/V3 place the UMI after the barcode segments, whereas space-ff places
+  the UMI immediately upstream of the first barcode segment. In the space-ff layout the
+  UMI and the first barcode are not separated by a linker and therefore appear as a single
+  contiguous block in the probe; the workflow splits such a block into a UMI part and a
+  barcode part using the known UMI and barcode lengths (`get_bc_umi`).
+* `space-ff` is a spatial assay: its barcode identifies a position in the feature
+  (tissue) rather than a single cell. The workflow therefore treats `3prime:space-ff`
+  like `visium:v1` during shortlist generation, i.e. no cell-count thresholding
+  (`--no_cell_filter`) is applied and `expected_cells` is not required.
+* Barcode correction for these kits uses the corresponding whitelists
+  (`884k-GEXSCOPE-V1.txt.gz`, `1769k-GEXSCOPE-V2.txt.gz`, `1769k-GEXSCOPE-V3.txt.gz`,
+  `9k-space-ff.txt.gz`) in `data/`. Because these barcodes have no fixed whitelist structure
+  comparable to 10x, a looser `barcode_max_ed` is commonly used (e.g. 5).
+* The barcode/UMI lengths of these kits are defined in `kit_configs.csv`, which can be
+  overridden with `kit_config`.
+
+Example usage for a Singleron library:
+```
+nextflow run singleron-RD/wf-single-cell \
+    --fastq {fastq.gz} \
+    --ref_genome_dir {ref_genome_dir} \
+    --kit '3prime:GEXSCOPE-V2' \
+    --expected_cells 10000 \
+    --barcode_max_ed 5 \
+    -profile standard
+```
 
 ### 4. Aligning reads to genome
 The next stage is to align the preprocessed reads to the reference genome. This enables gene and transcript
@@ -131,6 +185,8 @@ Alternatively if a predetermined number of cells is required for analysis, setti
 
 *note*: As `visium` barcodes do not represent cells, but rather tissue coordinates,
 shortlist cell count thresholding is not performed for `visium` analysis.
+The same applies to the Singleron spatial kit `3prime:space-ff`, whose barcodes also
+identify feature positions rather than cells.
 
 For uncorrected barcodes not present in the shortlist, they are cross-referenced against the shortlist, and are assigned 
 a barcode from this list if the candidate barcode meets the following criteria:
