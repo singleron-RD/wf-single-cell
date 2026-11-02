@@ -20,16 +20,36 @@ nextflow run singleron-RD/wf-single-cell \
 
 Singleron kits use a different read structure from 10x: the cell barcode is split into
 several segments separated by fixed linker sequences. The concatenated segments form the
-cell barcode, and each kit uses its own probe. The first `window` bp of each read (after
-stranding) are aligned against each candidate probe, and the alignment with the highest
-score is used (`align_adapter_multi` in `bin/workflow_glue/extract_barcode.py`).
+cell barcode, and each kit uses its own probe.
 
-| kit | barcode length | UMI length | probe structure (adapter orientation) | linkers (5'->3') | window |
-|-----|------|-----|---------------------------------------|------------------|--------|
-| GEXSCOPE-V1 | 8 | 12 | adapter1 + BC + L1 + BC + L2 + BC + C + UMI + polyT | L1: `ATCCACGTGCTTGAGA`, L2: `TCAGCATGCGGCTACG` | 200 |
-| GEXSCOPE-V2 | 9 | 12 | adapter1 + BC + L1 + BC + L2 + BC + C + UMI + polyT | L1: `ATCCACGTGCTTGAGA` / `TCGGTGACAGCCATAT` / `CGAACATGTAGGTCTC` / `GATTGTCACTAACGCG`, L2: `TCAGCATGCGGCTACG` / `CGTAGTCAGAAGCTGA` / `GACTACGTATTAGCAT` / `ATGCTGACTCCTAGTC` | 200 |
-| GEXSCOPE-V3 | 9 | 12 | adapter1 + BC + L1 + BC + L2 + BC + C + UMI + polyT | L1: `ACGATG`, L2: `CATAGT` | 200 |
-| space-ff | 8 | 12 | adapter1 + UMI + BC + L1 + BC + L2 + L3 + polyT | L1: `CATCACGT`, L2: `GCTTGAGA`, L3: `CTGTCTCTTATACACA` | 300 |
+A **probe** is a synthetic reference sequence that describes the expected layout of the
+barcode end of a read. It is built by concatenating:
+
+- the last `--barcode_adapter1_suff_length` bp (default 10) of the adapter1 sequence, so
+  that the alignment is anchored on the known adapter rather than on the variable region;
+- a run of `N`s for every variable region (each barcode segment and the UMI), where `N`
+  is a wildcard in the alignment matrix and stands for any base;
+- the fixed linker/spacer sequences that separate those variable regions;
+- a run of `T`s for the polyT tract at the end.
+
+The probe therefore contains no barcode or UMI sequence: it only encodes *where* the
+barcode and UMI are expected and *how long* each region is. The lengths come from
+`kit_configs.csv` (`barcode_length`, `umi_length`).
+
+A prefix of each read (after stranding) is aligned to each candidate probe of the selected
+kit — in a multi-barcode kit there may be several candidates, e.g. GEXSCOPE-V2 has one
+probe per alternative linker pair — and the alignment with the highest score is kept
+(`align_adapter_multi` in `bin/workflow_glue/extract_barcode.py`). The parts of the read
+that align to the `N` blocks of the winning probe are then extracted and trimmed: the
+blocks whose length equals `barcode_length` become the barcode segments (joined to give the
+cell barcode) and the remaining block becomes the UMI.
+
+| kit | barcode length | UMI length | probe structure (adapter orientation) | linkers (5'->3') |
+|-----|------|-----|---------------------------------------|------------------|
+| GEXSCOPE-V1 | 8 | 12 | adapter1 + BC + L1 + BC + L2 + BC + C + UMI + polyT | L1: `ATCCACGTGCTTGAGA`, L2: `TCAGCATGCGGCTACG` |
+| GEXSCOPE-V2 | 9 | 12 | adapter1 + BC + L1 + BC + L2 + BC + C + UMI + polyT | L1: `ATCCACGTGCTTGAGA` / `TCGGTGACAGCCATAT` / `CGAACATGTAGGTCTC` / `GATTGTCACTAACGCG`, L2: `TCAGCATGCGGCTACG` / `CGTAGTCAGAAGCTGA` / `GACTACGTATTAGCAT` / `ATGCTGACTCCTAGTC` |
+| GEXSCOPE-V3 | 9 | 12 | adapter1 + BC + L1 + BC + L2 + BC + C + UMI + polyT | L1: `ACGATG`, L2: `CATAGT` |
+| space-ff | 8 | 12 | adapter1 + UMI + BC + L1 + BC + L2 + L3 + polyT | L1: `CATCACGT`, L2: `GCTTGAGA`, L3: `CTGTCTCTTATACACA` |
 
 where `BC` is a barcode segment, `UMI` is the UMI, `C` is a spacer base and `polyT` is the
 polyT tract. The adapter1 used is the standard 3' adapter1 (`CTACACGACGCTCTTCCGATCT`), and
