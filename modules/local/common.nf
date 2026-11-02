@@ -87,19 +87,22 @@ process cat_tags_by_chrom {
     mkdir -p chr_tags
     mkdir -p ${tmpdir}
     
-    first_file=\$(ls tags/*.tsv.zst | head -n1)
-    [ -z "\$first_file" ] && { echo "No input files" >&2; exit 1; }
-    
-    # Get header from first line of first zstd file
-    # head -n1 stops after first line and closes its stdin; zstdcat then receives SIGPIPE (exit 141).
-    # So treat 141 as normal; any other non‑zero exit code is a real error.
-    header=\$( (zstdcat "\$first_file" | head -n1) 2>&1 ) || {
-        status=\$?
-        if [ "\$status" -ne 141 ]; then
-            echo "Error reading header: exit \$status" >&2
-            exit "\$status"
-        fi
-    }
+    # Take the first input via a glob array rather than "ls | head -n1".
+    # head exits after one line, leaving ls to die from SIGPIPE (141) when the
+    # file list is too long for a single pipe write; under "pipefail" that kills
+    # the task before it writes any output.
+    shopt -s nullglob
+    files=(tags/*.tsv.zst)
+    [ "\${#files[@]}" -eq 0 ] && { echo "No input files" >&2; exit 1; }
+    first_file=\${files[0]}
+
+    # Get header from the first line of the first zstd file.
+    # read stops after the first line; the trailing "|| true" keeps a SIGPIPE
+    # from zstdcat reaching the pipeline status under "pipefail".
+    header=\$(
+        { zstdcat "\$first_file" 2>/dev/null || true; } \\
+            | { IFS= read -r line || true; printf '%s\n' "\$line"; }
+    )
     [ -z "\$header" ] && { echo "Empty header" >&2; exit 1; }
     
     # Find chr column
