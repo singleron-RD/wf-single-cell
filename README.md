@@ -10,7 +10,6 @@ nextflow run singleron-RD/wf-single-cell \
     --ref_genome_dir {ref_genome_dir} \
     --kit '3prime:GEXSCOPE-V2' \
     --expected_cells 10000 \
-    --barcode_max_ed 5 \
     -profile standard \
     -resume \
 ```
@@ -64,9 +63,7 @@ Notes:
   in the probe; `get_bc_umi` splits such a block into a UMI part and a barcode part using
   the known UMI and barcode lengths.
 - `space-ff` is a spatial assay: its barcode identifies a position on the feature (tissue)
-  rather than a single cell. `3prime:space-ff` is therefore treated like `visium:v1` when
-  the barcode shortlist is generated (no cell-count thresholding, `--no_cell_filter`),
-  and `expected_cells` is not required.
+  rather than a single cell. 
 - Barcode correction uses the corresponding whitelists in `data/`
   (`884k-GEXSCOPE-V1.txt.gz`, `1769k-GEXSCOPE-V2.txt.gz`, `1769k-GEXSCOPE-V3.txt.gz`,
   `9k-space-ff.txt.gz`). 
